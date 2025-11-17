@@ -82,12 +82,12 @@ Packlyze can be used in two main ways: as a CLI tool and as a Node.js/TypeScript
   console.log(result.bundleStats.modules);
   ```
 
-## 📁 Project Structure
+## 📁 File  Structure
 
-Typical structure for a Packlyze-based project:
+Typical structure for a Packlyze:
 
 ```
-Packlyze-plus/
+Packlyze/
 ├── src/
 │   ├── types.ts                    # TypeScript interfaces
 │   ├── index.ts                    # Main entry point
