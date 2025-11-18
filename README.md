@@ -18,69 +18,64 @@ Advanced bundle analyzer with insights, recommendations, and historical tracking
 - **CLI Tool**: Easy-to-use command-line interface
 - **TypeScript Ready**: Full TypeScript support with type definitions
 
-## 🚀 Installation
+## 🚀 Quick Start
+
+Packlyze can be used in two main ways: as a CLI tool and as a Node.js/TypeScript library.
+
+**1. Install Packlyze (globally or with npx):**
 
 You can install Packlyze globally or use it via npx:
 
 ```bash
-npm install -g packlyze               
+npm install -g packlyze
 # or
-npx packlyze
+npx packlyze --help
 ```
 
+**2. Generate a stats file from your bundler (e.g., webpack):**
 
+> ⚠️ **Important:**  
+> You must generate a valid JSON stats file before running Packlyze.  
+> For webpack, use the following command in your project folder:
 
-## 📖 How to Use
+```bash
+npx webpack --profile --json stats.json
+```
+- This will create a readable `stats.json` file in your project directory.
 
-Packlyze can be used in two main ways: as a CLI tool and as a Node.js/TypeScript library.
+**3. Run Packlyze analysis:**
+```bash
+packlyze analyze stats.json
+# or (if using npx)
+npx packlyze analyze stats.json
+```
 
-### 1. CLI Usage
+**4. (Optional) Output an HTML report:**
+```bash
+packlyze analyze stats.json -o ./reports/bundle-report.html
+```
 
-#### Step-by-step:
-1. **Install Packlyze** (globally or use npx):
+---
+
+## 🐛 Common Issues & Solutions
+
+- **"Stats file not found":**  
+  Make sure `stats.json` exists in your folder.  
+  Generate it using your bundler (see above).
+
+- **"Invalid JSON in stats file":**  
+  Your stats file may be corrupted or not plain JSON.  
+  - Delete the file and re-run the correct webpack command.
+  - Open `stats.json` in a text editor; it should start with `{` and be readable.
+
+- **"webpack not recognized":**  
+  Install webpack locally in your project:
   ```bash
-  npm install -g packlyze
-  # or
-  npx packlyze --help
+  npm install --save-dev webpack webpack-cli
   ```
-2. **Generate a stats file** from your bundler (e.g., webpack, rollup, esbuild):
-  ```bash
-  # For webpack:
-  webpack --profile --json > stats.json
-  ```
-3. **Run Packlyze analysis**:
-  ```bash
-  packlyze analyze stats.json
-  # or (if using npx)
-  npx packlyze analyze stats.json
-  ```
-4. **Output an HTML report to a custom location**:
-  ```bash
-  packlyze analyze stats.json -o ./reports/bundle-report.html
-  ```
-5. **Get results in JSON format (for CI/CD or automation):**
-  ```bash
-  packlyze analyze stats.json --json
-  ```
+  Then use `npx webpack ...` to generate stats.
 
-### 2. Library Usage
-
-#### Step-by-step:
-1. **Install Packlyze** as a dependency:
-  ```bash
-  npm install packlyze
-  ```
-2. **Import and use in your code:**
-  ```typescript
-  import { Packlyze } from 'packlyze';
-
-  const analyzer = new Packlyze('./dist/stats.json');
-  const result = await analyzer.analyze();
-
-  console.log(result.recommendations);
-  console.log(result.metrics);
-  console.log(result.bundleStats.modules);
-  ```
+---
 
 ## 📁 File  Structure
 
