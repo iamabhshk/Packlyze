@@ -4,19 +4,20 @@
 [![Build Status](https://img.shields.io/github/workflow/status/iamabhshk/Packlyze/CI)](https://github.com/iamabhshk/Packlyze/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-# Packlyze
+## Packlyze
 
-Advanced bundle analyzer with insights, recommendations, and historical tracking.
+Advanced bundle analyzer with insights, recommendations, historical tracking, and a sleek HTML report.
 
 ## 📊 Features
 
-- **Package Analysis**: Parse and analyze webpack, rollup, and esbuild stats files
-- **Smart Recommendations**: AI-powered suggestions to optimize your bundle
-- **Tree-Shaking Detection**: Identify modules preventing tree-shaking
-- **Duplicate Detection**: Find and quantify duplicate modules
-- **Beautiful Reports**: Generate interactive HTML reports
-- **CLI Tool**: Easy-to-use command-line interface
-- **TypeScript Ready**: Full TypeScript support with type definitions
+- **Package Analysis**: Parse and analyze webpack, rollup, and esbuild stats files.
+- **Smart Recommendations**: Suggestions to optimize bundle size and structure.
+- **Tree-Shaking Detection**: Identify modules and patterns that block tree-shaking.
+- **Duplicate Detection**: Find and quantify duplicate modules with potential savings.
+- **Beautiful HTML Report**: Sleek, dark-themed, responsive report with high-level metrics and deep insights.
+- **Baseline Comparison**: Compare current vs previous stats to see regressions and improvements.
+- **CLI Tool**: Easy-to-use command-line interface with filters and CI-friendly thresholds.
+- **TypeScript Ready**: Full TypeScript support with type definitions.
 
 ## 🚀 Quick Start
 
@@ -43,7 +44,7 @@ npx webpack --profile --json stats.json
 ```
 - This will create a readable `stats.json` file in your project directory.
 
-**3. Run Packlyze analysis:**
+**3. Run Packlyze analysis (CLI):**
 ```bash
 packlyze analyze stats.json
 # or (if using npx)
@@ -122,10 +123,83 @@ The analyzer provides:
 - Info: Monitor for growth
 
 ### Insights
-- Tree-shaking issues
-- Duplicate modules
-- Large modules (>5% of bundle)
-- Module count analysis
+- Tree-shaking issues.
+- Duplicate modules.
+- Large modules (configurable threshold, default >5% of bundle).
+- Module count and chunk analysis.
+
+### HTML Report
+
+The generated HTML report is a single, static file with a modern dark UI:
+
+- **Header**: Run timestamp, optional baseline timestamp, and quick badges that summarize what you’re seeing.
+- **Metrics Grid**: Cards for total size, gzip size, modules, chunks, average module size, and largest module.
+  - When a `--baseline` is provided, each metric shows a colored delta (green for improvement, red for regression).
+- **Recommendations**: Color-coded cards grouped by severity (critical, warning, info) with clear “Action” text.
+- **Top Modules Table**: Top 10 modules by size, with size and share of the bundle.
+- **Duplicate Modules Section**: Table with count, total size, potential savings, and example module names.
+- **Tree-Shaking Section**: List of CommonJS / `require`-style modules that may block tree-shaking.
+
+You can open the HTML report directly in any modern browser; no network access or JS bundling is required.
+
+---
+
+## ⚙️ CLI Usage & Options
+
+The main CLI entry point is the `analyze` command:
+
+```bash
+packlyze analyze <statsFile> [options]
+```
+
+### Core options
+
+- `-o, --output <path>`: Path to the HTML report (default: `./bundle-report.html`).
+- `-j, --json`: Output raw JSON analysis to stdout instead of human-readable text/HTML.
+- `-v, --verbose`: Reserved for future verbose logging.
+
+### Focus & filter options
+
+- `--only-duplicates`: Only print duplicate modules table in the CLI output.
+- `--only-large-modules`: Only print large modules table in the CLI output.
+- `--large-module-threshold <percent>`: Percentage of bundle size at which a module is considered “large” (default: `5`).
+- `--no-html`: Skip HTML report generation (useful in fast CLI-only workflows).
+
+### Baseline comparison
+
+- `--baseline <statsFile>`: Provide a previous stats file to compare against.
+
+When a baseline is provided:
+
+- CLI summary prints deltas for total size, gzip size, module count, and chunk count.
+- HTML metrics cards show deltas under each metric (green good, red regression).
+
+Example:
+
+```bash
+packlyze analyze dist/stats.new.json --baseline dist/stats.old.json
+```
+
+### CI-friendly thresholds
+
+Packlyze can enforce bundle-size budgets and fail your CI when limits are exceeded:
+
+- `--max-gzip-size <mb>`: Fail if gzip size exceeds this many megabytes.
+- `--max-initial-size <mb>`: Fail if initial bundle size (initial chunks) exceeds this many megabytes.
+
+When thresholds are violated:
+
+- The CLI prints a clear error message.
+- `packlyze` exits with a non-zero exit code so your CI job can fail on regressions.
+
+Example:
+
+```bash
+packlyze analyze dist/stats.json \
+  --max-gzip-size 1.2 \
+  --max-initial-size 0.9 \
+  --no-html
+```
 
 ## 🎯 Use Cases
 

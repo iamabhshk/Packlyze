@@ -1,0 +1,10 @@
+node_modules
+dist
+reports/
+sample-stats.current.json
+sample-stats.baseline.json
+sample-output.json
+sample-report.html
+.DS_Store
+Thumbs.db
+*.log

@@ -11,7 +11,21 @@ import {
 } from '../types.js';
 
 export class Packlyze {
-  private statsData: any;
+  private statsData: {
+    assets?: Array<{ size?: number; gzipSize?: number; }>;
+    modules?: Array<ModuleInfo & { reasons?: Array<{ moduleName: string }>;
+      source?: string; }>;
+    chunks?: Array<{
+      id: string | number;
+      name?: string;
+      size?: number;
+      gzipSize?: number;
+      modules?: Array<{ name: string }>;
+      initial?: boolean;
+    }>;
+    name?: string;
+    parsedSize?: number;
+  } = {};
   private baseDir: string;
 
   constructor(statsPath: string) {
@@ -50,13 +64,15 @@ export class Packlyze {
 
   private extractBundleStats(): BundleStats {
     const assets = this.statsData.assets || [];
-    const modules = (this.statsData.modules || []).map((m: any) => ({
+    const modules = (this.statsData.modules || []).map((m) => ({
       name: m.name || 'unknown',
       size: m.size || 0,
       gzipSize: m.gzipSize,
       percentage: (m.size || 0) / this.getTotalSize() * 100,
-      reasons: m.reasons?.map((r: any) => r.moduleName) || []
-    } as ModuleInfo));
+      reasons: Array.isArray(m.reasons)
+        ? (m.reasons as Array<{ moduleName?: string } | string>).map((r) => typeof r === 'string' ? r : r.moduleName ?? '')
+        : []
+    }));
 
     return {
       name: this.statsData.name || 'bundle',
@@ -71,29 +87,29 @@ export class Packlyze {
   }
 
   private getTotalSize(): number {
-    const assets = this.statsData.assets || [];
-    return assets.reduce((sum: number, asset: any) => sum + (asset.size || 0), 0);
+  const assets = this.statsData.assets || [];
+  return assets.reduce((sum: number, asset) => sum + (asset.size || 0), 0);
   }
 
   private getTotalGzipSize(): number {
-    const assets = this.statsData.assets || [];
-    return assets.reduce((sum: number, asset: any) => sum + (asset.gzipSize || 0), 0);
+  const assets = this.statsData.assets || [];
+  return assets.reduce((sum: number, asset) => sum + (asset.gzipSize || 0), 0);
   }
 
   private extractChunks(): ChunkInfo[] {
-    return (this.statsData.chunks || []).map((chunk: any) => ({
+    return (this.statsData.chunks || []).map((chunk) => ({
       id: chunk.id,
       name: chunk.name || `chunk-${chunk.id}`,
       size: chunk.size || 0,
       gzipSize: chunk.gzipSize,
-      modules: chunk.modules?.map((m: any) => m.name) || []
-    } as ChunkInfo));
+      modules: Array.isArray(chunk.modules) ? chunk.modules.map((m: { name: string }) => m.name) : []
+    }));
   }
 
   private getInitialBundleSize(): number {
     return (this.statsData.chunks || [])
-      .filter((c: any) => c.initial === true)
-      .reduce((sum: number, c: any) => sum + (c.size || 0), 0);
+      .filter((c) => c.initial === true)
+      .reduce((sum: number, c) => sum + (c.size || 0), 0);
   }
 
   private generateRecommendations(stats: BundleStats): Recommendation[] {
@@ -149,9 +165,8 @@ export class Packlyze {
   private detectTreeshakingIssues(): string[] {
     const issues: string[] = [];
     const modules = this.statsData.modules || [];
-
-    modules.forEach((m: any) => {
-      if (m.source?.includes('module.exports') || m.source?.includes('require(')) {
+    modules.forEach((m) => {
+      if (typeof m.source === 'string' && (m.source.includes('module.exports') || m.source.includes('require('))) {
         issues.push(`${m.name}: Uses CommonJS - reduces tree-shaking effectiveness`);
       }
     });
@@ -160,20 +175,18 @@ export class Packlyze {
   }
 
   private findDuplicates(): DuplicateModule[] {
-    const moduleMap = new Map<string, any[]>();
+    const moduleMap = new Map<string, ModuleInfo[]>();
     const duplicates: DuplicateModule[] = [];
-
-    (this.statsData.modules || []).forEach((module: any) => {
+    (this.statsData.modules || []).forEach((module: ModuleInfo) => {
       const baseName = path.basename(module.name || '');
       if (!moduleMap.has(baseName)) {
         moduleMap.set(baseName, []);
       }
       moduleMap.get(baseName)!.push(module);
     });
-
     moduleMap.forEach((modules) => {
       if (modules.length > 1) {
-        const totalSize = modules.reduce((s: number, m: any) => s + (m.size || 0), 0);
+        const totalSize = modules.reduce((s: number, m) => s + (m.size || 0), 0);
         const minSize = Math.min(...modules.map(m => m.size || 0));
         duplicates.push({
           names: modules.map(m => m.name),
@@ -189,7 +202,6 @@ export class Packlyze {
   private calculateMetrics(stats: BundleStats): BundleMetrics {
     const sizes = stats.modules.map(m => m.size);
     const averageSize = sizes.length > 0 ? sizes.reduce((a, b) => a + b, 0) / sizes.length : 0;
-
     return {
       totalSize: stats.size,
       totalGzipSize: stats.gzipSize || 0,
@@ -199,7 +211,8 @@ export class Packlyze {
         name: 'N/A',
         size: 0,
         percentage: 0,
-        reasons: []
+        reasons: [],
+        gzipSize: 0
       },
       averageModuleSize: averageSize
     };
