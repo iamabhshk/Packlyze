@@ -93,7 +93,6 @@ export class Packlyze {
       }
 
       // Fallback: case-insensitive search
-      const lowerFiles = files.map(f => f.toLowerCase());
       for (const pattern of entryPointPatterns) {
         const lowerPattern = pattern.toLowerCase();
         const found = files.find(f => f.toLowerCase() === lowerPattern);
