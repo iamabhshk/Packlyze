@@ -57,7 +57,18 @@ export class Packlyze {
       this.statsData = JSON.parse(content);
       this.log('Validating stats structure...');
       this.validateStats();
-      this.log(`Found ${this.statsData.modules?.length || 0} modules, ${this.statsData.chunks?.length || 0} chunks`);
+      
+      // Count modules from different sources
+      const topLevelModules = this.statsData.modules?.length || 0;
+      const chunks = this.statsData.chunks || [];
+      let chunkModules = 0;
+      chunks.forEach((chunk) => {
+        if (Array.isArray(chunk.modules)) {
+          chunkModules += chunk.modules.length;
+        }
+      });
+      
+      this.log(`Found ${topLevelModules} top-level modules, ${chunkModules} modules in chunks, ${chunks.length} chunks`);
     } catch (e) {
       if (e instanceof Error && e.message.includes('Invalid stats')) {
         throw e;
@@ -116,10 +127,10 @@ export class Packlyze {
     const packages = this.analyzePackages(bundleStats);
     
     this.log('Detecting duplicate modules...');
-    const duplicates = this.findDuplicates();
+    const duplicates = this.findDuplicates(bundleStats);
     
     this.log('Detecting tree-shaking issues...');
-    const treeshakingIssues = this.detectTreeshakingIssues();
+    const treeshakingIssues = this.detectTreeshakingIssues(bundleStats);
     
     this.log('Generating recommendations...');
     const recommendations = this.generateRecommendations(bundleStats);
@@ -149,21 +160,97 @@ export class Packlyze {
 
   private extractBundleStats(): BundleStats {
     const assets = this.statsData.assets || [];
-    const totalSize = this.getTotalSize();
-    const modules = (this.statsData.modules || []).map((m) => ({
-      name: m.name || 'unknown',
-      size: m.size || 0,
-      gzipSize: m.gzipSize,
-      percentage: totalSize > 0 ? ((m.size || 0) / totalSize) * 100 : 0,
-      reasons: Array.isArray(m.reasons)
-        ? (m.reasons as Array<{ moduleName?: string } | string>).map((r) => typeof r === 'string' ? r : r.moduleName ?? '')
-        : []
+    
+    // Extract modules from top-level or from chunks (webpack 5+ format)
+    let modules: ModuleInfo[] = [];
+    
+    // First, try top-level modules array
+    if (Array.isArray(this.statsData.modules) && this.statsData.modules.length > 0) {
+      modules = this.statsData.modules.map((m) => ({
+        name: m.name || 'unknown',
+        size: m.size || 0,
+        gzipSize: m.gzipSize,
+        percentage: 0, // Will calculate after we know total size
+        reasons: Array.isArray(m.reasons)
+          ? (m.reasons as Array<{ moduleName?: string } | string>).map((r) => typeof r === 'string' ? r : r.moduleName ?? '')
+          : []
+      }));
+    } else {
+      // Extract modules from chunks (webpack 5+ format)
+      const moduleMap = new Map<string, ModuleInfo>();
+      const chunks = this.statsData.chunks || [];
+      
+      chunks.forEach((chunk) => {
+        if (Array.isArray(chunk.modules)) {
+          chunk.modules.forEach((m: { name?: string; size?: number; gzipSize?: number; reasons?: unknown } | string) => {
+            // Handle both object and string formats
+            let moduleName: string;
+            let moduleSize: number;
+            let moduleGzipSize: number | undefined;
+            let moduleReasons: unknown;
+            
+            if (typeof m === 'string') {
+              // Module is just a name string
+              moduleName = m;
+              moduleSize = 0; // Size unknown, will be calculated from chunk or assets
+              moduleGzipSize = undefined;
+              moduleReasons = [];
+            } else {
+              // Module is an object
+              moduleName = m.name || 'unknown';
+              moduleSize = m.size || 0;
+              moduleGzipSize = m.gzipSize;
+              moduleReasons = m.reasons;
+            }
+            
+            if (!moduleMap.has(moduleName)) {
+              moduleMap.set(moduleName, {
+                name: moduleName,
+                size: moduleSize,
+                gzipSize: moduleGzipSize,
+                percentage: 0,
+                reasons: Array.isArray(moduleReasons)
+                  ? (moduleReasons as Array<{ moduleName?: string } | string>).map((r) => typeof r === 'string' ? r : r.moduleName ?? '')
+                  : []
+              });
+            } else {
+              // If module appears in multiple chunks, use the maximum size (not sum)
+              // because the same module shouldn't be counted multiple times
+              const existing = moduleMap.get(moduleName)!;
+              existing.size = Math.max(existing.size, moduleSize);
+              if (moduleGzipSize) {
+                existing.gzipSize = existing.gzipSize ? Math.max(existing.gzipSize, moduleGzipSize) : moduleGzipSize;
+              }
+              // Merge reasons if available
+              if (Array.isArray(moduleReasons) && moduleReasons.length > 0) {
+                const existingReasons = new Set(existing.reasons);
+                (moduleReasons as Array<{ moduleName?: string } | string>).forEach((r) => {
+                  const reasonStr = typeof r === 'string' ? r : r.moduleName ?? '';
+                  if (reasonStr) existingReasons.add(reasonStr);
+                });
+                existing.reasons = Array.from(existingReasons);
+              }
+            }
+          });
+        }
+      });
+      
+      modules = Array.from(moduleMap.values());
+    }
+    
+    // Calculate total size from assets or modules
+    const totalSize = this.getTotalSize() || modules.reduce((sum, m) => sum + (m.size || 0), 0);
+    
+    // Calculate percentages
+    modules = modules.map((m) => ({
+      ...m,
+      percentage: totalSize > 0 ? ((m.size || 0) / totalSize) * 100 : 0
     }));
 
     return {
       name: this.statsData.name || 'bundle',
-      size: this.getTotalSize(),
-      gzipSize: this.getTotalGzipSize(),
+      size: totalSize,
+      gzipSize: this.getTotalGzipSize() || modules.reduce((sum, m) => sum + (m.gzipSize || 0), 0),
       modules: modules.sort((a: ModuleInfo, b: ModuleInfo) => b.size - a.size),
       chunks: this.extractChunks(),
       isInitialBySize: this.getInitialBundleSize(),
@@ -173,13 +260,85 @@ export class Packlyze {
   }
 
   private getTotalSize(): number {
-  const assets = this.statsData.assets || [];
-  return assets.reduce((sum: number, asset) => sum + (asset.size || 0), 0);
+    const assets = this.statsData.assets || [];
+    const assetSize = assets.reduce((sum: number, asset) => sum + (asset.size || 0), 0);
+    
+    // If assets are empty or zero, try to calculate from modules
+    if (assetSize === 0) {
+      // Try top-level modules
+      if (Array.isArray(this.statsData.modules) && this.statsData.modules.length > 0) {
+        return this.statsData.modules.reduce((sum: number, m) => sum + (m.size || 0), 0);
+      }
+      
+      // Try modules from chunks
+      const chunks = this.statsData.chunks || [];
+      let moduleSize = 0;
+      const seenModules = new Set<string>();
+      
+      chunks.forEach((chunk) => {
+        if (Array.isArray(chunk.modules)) {
+          chunk.modules.forEach((m: { name?: string; size?: number }) => {
+            const moduleName = m.name || 'unknown';
+            // Only count each module once (in case it appears in multiple chunks)
+            if (!seenModules.has(moduleName)) {
+              seenModules.add(moduleName);
+              moduleSize += (m.size || 0);
+            }
+          });
+        }
+      });
+      
+      if (moduleSize > 0) {
+        return moduleSize;
+      }
+      
+      // Try chunk sizes as fallback
+      const chunkSize = chunks.reduce((sum: number, c) => sum + (c.size || 0), 0);
+      if (chunkSize > 0) {
+        return chunkSize;
+      }
+    }
+    
+    return assetSize;
   }
 
   private getTotalGzipSize(): number {
-  const assets = this.statsData.assets || [];
-  return assets.reduce((sum: number, asset) => sum + (asset.gzipSize || 0), 0);
+    const assets = this.statsData.assets || [];
+    const assetGzipSize = assets.reduce((sum: number, asset) => sum + (asset.gzipSize || 0), 0);
+    
+    // If assets are empty or zero, try to calculate from modules
+    if (assetGzipSize === 0) {
+      // Try top-level modules
+      if (Array.isArray(this.statsData.modules) && this.statsData.modules.length > 0) {
+        return this.statsData.modules.reduce((sum: number, m) => sum + (m.gzipSize || 0), 0);
+      }
+      
+      // Try modules from chunks
+      const chunks = this.statsData.chunks || [];
+      let moduleGzipSize = 0;
+      const seenModules = new Set<string>();
+      
+      chunks.forEach((chunk) => {
+        if (Array.isArray(chunk.modules)) {
+          chunk.modules.forEach((m: { name?: string; gzipSize?: number }) => {
+            const moduleName = m.name || 'unknown';
+            if (!seenModules.has(moduleName)) {
+              seenModules.add(moduleName);
+              moduleGzipSize += (m.gzipSize || 0);
+            }
+          });
+        }
+      });
+      
+      if (moduleGzipSize > 0) {
+        return moduleGzipSize;
+      }
+      
+      // Try chunk gzip sizes as fallback
+      return chunks.reduce((sum: number, c) => sum + (c.gzipSize || 0), 0);
+    }
+    
+    return assetGzipSize;
   }
 
   private extractChunks(): ChunkInfo[] {
@@ -227,7 +386,7 @@ export class Packlyze {
     }
 
     // Duplicate check
-    const duplicates = this.findDuplicates();
+    const duplicates = this.findDuplicates(stats);
     if (duplicates.length > 0) {
       recommendations.push({
         severity: 'warning',
@@ -248,11 +407,18 @@ export class Packlyze {
     return recommendations;
   }
 
-  private detectTreeshakingIssues(): string[] {
+  private detectTreeshakingIssues(stats: BundleStats): string[] {
     const issues: string[] = [];
-    const modules = this.statsData.modules || [];
-    modules.forEach((m) => {
-      if (typeof m.source === 'string' && (m.source.includes('module.exports') || m.source.includes('require('))) {
+    
+    // Check modules from BundleStats (which includes extracted modules)
+    stats.modules.forEach((m) => {
+      // Try to get source from original stats data
+      const originalModule = Array.isArray(this.statsData.modules) 
+        ? this.statsData.modules.find((om: { name?: string }) => om.name === m.name)
+        : null;
+      
+      if (originalModule && typeof originalModule.source === 'string' && 
+          (originalModule.source.includes('module.exports') || originalModule.source.includes('require('))) {
         issues.push(`${m.name}: Uses CommonJS - reduces tree-shaking effectiveness`);
       }
     });
@@ -281,12 +447,12 @@ export class Packlyze {
     return path.basename(modulePath);
   }
 
-  private findDuplicates(): DuplicateModule[] {
+  private findDuplicates(stats: BundleStats): DuplicateModule[] {
     // Group by package name (for node_modules) or basename (for source files)
     const packageMap = new Map<string, ModuleInfo[]>();
     const duplicates: DuplicateModule[] = [];
 
-    (this.statsData.modules || []).forEach((module: ModuleInfo) => {
+    stats.modules.forEach((module) => {
       const moduleName = module.name || '';
       const packageName = this.extractPackageName(moduleName) || 'unknown';
 
