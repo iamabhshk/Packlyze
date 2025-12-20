@@ -84,6 +84,23 @@ packlyze analyze stats.json -o ./reports/bundle-report.html
   ```
   Then use `npx webpack ...` to generate stats.
 
+- **"Module not found: Can't resolve './src'":**  
+  This means your webpack entry point is pointing to a directory instead of a file.  
+  **Fix:** Update your `webpack.config.js` entry point:
+  ```javascript
+  module.exports = {
+    entry: './src/index.js',  // ✅ Point to a file, not a directory
+    // NOT: entry: './src'    // ❌ This won't work
+  };
+  ```
+  Common entry points:
+  - `./src/index.js`
+  - `./src/index.ts`
+  - `./src/main.js`
+  - `./src/app.js`
+
+  Or check your `package.json` for the `main` field and use that as the entry point.
+
 ---
 
 ## 📁 File  Structure
@@ -251,21 +268,24 @@ Here are some example commands and configurations for different frameworks:
 
 ### Webpack Project
 
-```bash
-# In your webpack config
+```javascript
+// webpack.config.js
 const path = require('path');
 
 module.exports = {
-  // ... your config
-  plugins: [
-    // Add BundleAnalyzerPlugin if available
-  ],
-  // Generate stats.json
-  profile: true,
+  entry: './src/index.js',  // ✅ Must point to a file, not a directory
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: 'bundle.js'
+  },
+  // ... your other config
 };
 
-# Command
-npx packlyze analyze stats.json
+// Generate stats.json
+// npx webpack --profile --json stats.json
+
+// Analyze with Packlyze
+// npx packlyze analyze stats.json
 ```
 
 ### Next.js Project
