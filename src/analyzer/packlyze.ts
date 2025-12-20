@@ -82,6 +82,25 @@ export class Packlyze {
       throw new Error('Invalid stats: stats file must be a valid JSON object');
     }
 
+    // Check for webpack build errors
+    const errors = Array.isArray((this.statsData as { errors?: unknown[] }).errors) 
+      ? (this.statsData as { errors: Array<{ message?: string; details?: string }> }).errors 
+      : [];
+    
+    if (errors.length > 0) {
+      const errorMessages = errors
+        .slice(0, 3)
+        .map((e, i) => `${i + 1}. ${e.message || 'Unknown error'}`)
+        .join('\n   ');
+      
+      throw new Error(
+        `Webpack build failed with ${errors.length} error(s). Cannot analyze bundle.\n\n` +
+        `Errors:\n   ${errorMessages}${errors.length > 3 ? `\n   ... and ${errors.length - 3} more error(s)` : ''}\n\n` +
+        `💡 Fix the webpack build errors first, then regenerate stats.json:\n` +
+        `   npx webpack --profile --json stats.json`
+      );
+    }
+
     // Check for required structure (at least one of assets, modules, or chunks should exist)
     const hasAssets = Array.isArray(this.statsData.assets);
     const hasModules = Array.isArray(this.statsData.modules);
@@ -91,6 +110,24 @@ export class Packlyze {
       throw new Error(
         'Invalid stats: stats file must contain at least one of: assets, modules, or chunks arrays. ' +
         'Ensure you generated the stats file correctly (e.g., webpack --profile --json stats.json)'
+      );
+    }
+
+    // Check if stats file is empty (no actual content)
+    const assetsCount = hasAssets ? this.statsData.assets!.length : 0;
+    const modulesCount = hasModules ? this.statsData.modules!.length : 0;
+    const chunks = hasChunks ? this.statsData.chunks! : [];
+    const chunksWithModules = chunks.filter((c: { modules?: unknown[] }) => 
+      Array.isArray(c.modules) && c.modules.length > 0
+    ).length;
+
+    if (assetsCount === 0 && modulesCount === 0 && chunksWithModules === 0) {
+      throw new Error(
+        'Stats file contains no modules or assets. This usually means:\n' +
+        '1. The webpack build failed (check for errors above)\n' +
+        '2. The entry point is missing or incorrect\n' +
+        '3. No files were processed by webpack\n\n' +
+        '💡 Ensure your webpack configuration is correct and the build succeeds before generating stats.'
       );
     }
 

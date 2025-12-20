@@ -38,6 +38,27 @@ describe('Packlyze', () => {
     expect(() => new Packlyze(filePath)).toThrow('Invalid stats: stats file must contain');
   });
 
+  it('should detect webpack build errors', () => {
+    const filePath = createStatsFile('webpack-errors.json', {
+      errors: [
+        { message: 'Module not found: Error: Can\'t resolve \'./src\'' }
+      ],
+      assets: [],
+      modules: [],
+      chunks: []
+    });
+    expect(() => new Packlyze(filePath)).toThrow('Webpack build failed');
+  });
+
+  it('should detect empty bundle with no modules', () => {
+    const filePath = createStatsFile('empty-bundle.json', {
+      assets: [],
+      modules: [],
+      chunks: [{ id: 1, modules: [] }]
+    });
+    expect(() => new Packlyze(filePath)).toThrow('Stats file contains no modules or assets');
+  });
+
   it('should throw error for invalid module sizes', () => {
     const filePath = createStatsFile('invalid-modules.json', {
       modules: [{ name: 'test.js', size: -100 }]
