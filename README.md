@@ -86,20 +86,38 @@ packlyze analyze stats.json -o ./reports/bundle-report.html
 
 - **"Module not found: Can't resolve './src'":**  
   This means your webpack entry point is pointing to a directory instead of a file.  
-  **Fix:** Update your `webpack.config.js` entry point:
+  **Fix:** Update your `webpack.config.js` entry point to point to an actual file:
+  
+  **How to find your entry point:**
+  1. Check your `package.json` for the `main` field
+  2. Look in your `src` folder for common entry files:
+     - React: `App.tsx`, `App.jsx`, `app.tsx`, `app.jsx`, `index.tsx`, `index.jsx`
+     - Vue: `main.js`, `main.ts`, `app.js`, `app.ts`
+     - Angular: `main.ts`, `main.js`
+     - Generic: `index.js`, `index.ts`, `main.js`, `main.ts`
+  3. Check your `webpack.config.js` or `vite.config.js` for the entry configuration
+  
+  **Example fixes:**
   ```javascript
+  // webpack.config.js
   module.exports = {
-    entry: './src/index.js',  // ✅ Point to a file, not a directory
-    // NOT: entry: './src'    // ❌ This won't work
+    entry: './src/App.tsx',     // ✅ React project
+    // OR
+    entry: './src/index.jsx',  // ✅ React project
+    // OR
+    entry: './src/main.js',    // ✅ Vue/Generic
+    // NOT: entry: './src'     // ❌ Directory won't work
   };
   ```
-  Common entry points:
-  - `./src/index.js`
-  - `./src/index.ts`
-  - `./src/main.js`
-  - `./src/app.js`
-
-  Or check your `package.json` for the `main` field and use that as the entry point.
+  
+  **Quick check:** List files in your `src` folder:
+  ```bash
+  # Windows
+  dir src
+  
+  # Mac/Linux
+  ls src
+  ```
 
 ---
 
@@ -273,11 +291,29 @@ Here are some example commands and configurations for different frameworks:
 const path = require('path');
 
 module.exports = {
-  entry: './src/index.js',  // ✅ Must point to a file, not a directory
+  // Entry point must be a FILE, not a directory
+  // Common entry points:
+  entry: './src/App.tsx',     // React: App.tsx, App.jsx, app.tsx, app.jsx
+  // OR: entry: './src/index.jsx',  // React: index.tsx, index.jsx
+  // OR: entry: './src/main.js',    // Vue/Generic: main.js, main.ts
+  // NOT: entry: './src'            // ❌ Directory won't work
+  
   output: {
     path: path.resolve(__dirname, 'dist'),
     filename: 'bundle.js'
   },
+  module: {
+    rules: [
+      {
+        test: /\.(js|jsx|ts|tsx)$/,
+        exclude: /node_modules/,
+        use: 'babel-loader'
+      }
+    ]
+  },
+  resolve: {
+    extensions: ['.js', '.jsx', '.ts', '.tsx']
+  }
   // ... your other config
 };
 

@@ -47,6 +47,87 @@ export class Packlyze {
     }
   }
 
+  /**
+   * Automatically detect entry point by scanning common locations
+   */
+  private detectEntryPoint(): string | null {
+    // Try src in the same directory as stats file, or one level up (common patterns)
+    const possibleSrcDirs = [
+      path.join(this.baseDir, 'src'),           // stats.json in project root
+      path.join(path.dirname(this.baseDir), 'src')  // stats.json in subdirectory
+    ];
+    
+    let srcDir: string | null = null;
+    for (const dir of possibleSrcDirs) {
+      if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
+        srcDir = dir;
+        break;
+      }
+    }
+    
+    if (!srcDir) {
+      return null;
+    }
+
+    // Priority order for entry point detection
+    const entryPointPatterns = [
+      // React (case-sensitive, most common)
+      'App.tsx', 'App.jsx', 'app.tsx', 'app.jsx',
+      // React index files
+      'index.tsx', 'index.jsx',
+      // Generic entry points
+      'main.ts', 'main.js', 'main.tsx', 'main.jsx',
+      'index.ts', 'index.js',
+      // Vue/Angular
+      'app.ts', 'app.js',
+    ];
+
+    try {
+      const files = fs.readdirSync(srcDir);
+      
+      // Check for exact matches first (case-sensitive)
+      for (const pattern of entryPointPatterns) {
+        if (files.includes(pattern)) {
+          return `./src/${pattern}`;
+        }
+      }
+
+      // Fallback: case-insensitive search
+      const lowerFiles = files.map(f => f.toLowerCase());
+      for (const pattern of entryPointPatterns) {
+        const lowerPattern = pattern.toLowerCase();
+        const found = files.find(f => f.toLowerCase() === lowerPattern);
+        if (found) {
+          return `./src/${found}`;
+        }
+      }
+
+      // Last resort: find any .tsx, .ts, .jsx, or .js file in src root
+      const jsFiles = files.filter(f => 
+        /\.(tsx?|jsx?)$/i.test(f) && 
+        !f.includes('.test.') && 
+        !f.includes('.spec.')
+      );
+      
+      if (jsFiles.length > 0) {
+        // Prefer files that look like entry points
+        const entryLike = jsFiles.find(f => 
+          /^(app|main|index)\./i.test(f)
+        );
+        if (entryLike) {
+          return `./src/${entryLike}`;
+        }
+        // Otherwise return the first JS file
+        return `./src/${jsFiles[0]}`;
+      }
+    } catch (error) {
+      // Silently fail - can't read directory
+      this.log(`Could not scan src directory: ${error}`);
+    }
+
+    return null;
+  }
+
   private loadStats(statsPath: string): void {
     this.log('Reading stats file...');
     const content = fs.readFileSync(statsPath, 'utf-8');
@@ -93,10 +174,30 @@ export class Packlyze {
         .map((e, i) => `${i + 1}. ${e.message || 'Unknown error'}`)
         .join('\n   ');
       
+      // Check for entry point resolution errors and auto-detect entry files
+      const entryPointError = errors.find(e => 
+        e.message?.includes("Can't resolve") && 
+        (e.message.includes('./src') || e.message.includes("'./src'") || e.message.includes('"./src"'))
+      );
+      
+      let suggestion = '';
+      if (entryPointError) {
+        const detectedEntry = this.detectEntryPoint();
+        if (detectedEntry) {
+          suggestion = `\n\n🔍 Auto-detected entry point: ${detectedEntry}\n` +
+            `   Update your webpack.config.js:\n` +
+            `   entry: '${detectedEntry}',\n`;
+        } else {
+          suggestion = `\n\n💡 Tip: Your entry point should be a FILE, not a directory.\n` +
+            `   Common entry points: ./src/App.tsx, ./src/index.jsx, ./src/main.js\n`;
+        }
+      }
+      
       throw new Error(
         `Webpack build failed with ${errors.length} error(s). Cannot analyze bundle.\n\n` +
-        `Errors:\n   ${errorMessages}${errors.length > 3 ? `\n   ... and ${errors.length - 3} more error(s)` : ''}\n\n` +
-        `💡 Fix the webpack build errors first, then regenerate stats.json:\n` +
+        `Errors:\n   ${errorMessages}${errors.length > 3 ? `\n   ... and ${errors.length - 3} more error(s)` : ''}` +
+        suggestion +
+        `\n💡 Fix the webpack build errors first, then regenerate stats.json:\n` +
         `   npx webpack --profile --json stats.json`
       );
     }

@@ -50,6 +50,32 @@ describe('Packlyze', () => {
     expect(() => new Packlyze(filePath)).toThrow('Webpack build failed');
   });
 
+  it('should auto-detect entry point when webpack fails with directory resolution', () => {
+    // Create a src directory with App.tsx
+    const srcDir = path.join(tempDir, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.writeFileSync(path.join(srcDir, 'App.tsx'), 'export default App;', 'utf-8');
+    
+    const filePath = createStatsFile('webpack-entry-error.json', {
+      errors: [
+        { message: 'Module not found: Error: Can\'t resolve \'./src\' in \'C:\\project\'' }
+      ],
+      assets: [],
+      modules: [],
+      chunks: []
+    });
+    
+    try {
+      new Packlyze(filePath);
+      expect.fail('Should have thrown an error');
+    } catch (error) {
+      const errorMessage = (error as Error).message;
+      expect(errorMessage).toContain('Webpack build failed');
+      expect(errorMessage).toContain('Auto-detected entry point');
+      expect(errorMessage).toContain('./src/App.tsx');
+    }
+  });
+
   it('should detect empty bundle with no modules', () => {
     const filePath = createStatsFile('empty-bundle.json', {
       assets: [],
