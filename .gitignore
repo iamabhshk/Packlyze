@@ -1,10 +1,75 @@
-node_modules
-dist
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+.nyc_output/
+*.lcov
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Reports and sample files
 reports/
-sample-stats.current.json
-sample-stats.baseline.json
+sample-stats.*.json
 sample-output.json
 sample-report.html
+*.csv
+# Generated markdown reports (keep README.md and docs/)
+*-report.md
+bundle-report.md
+
+# History and tracking
+.packlyze/
+*.history.json
+
+# OS files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
-*.log
+Desktop.ini
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+.temp/
+
+# Dependency graph outputs
+*.dot
+*.svg
+graph.*
+
+# Note: package-lock.json should typically be committed for npm packages
+# If you want to ignore it, uncomment the line below:
+# package-lock.json

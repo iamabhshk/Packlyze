@@ -11,12 +11,20 @@ Advanced bundle analyzer with insights, recommendations, historical tracking, an
 ## 📊 Features
 
 - **Package Analysis**: Parse and analyze webpack, rollup, and esbuild stats files.
+- **Package-Level Insights**: Group modules by npm package to identify heavy dependencies.
 - **Smart Recommendations**: Suggestions to optimize bundle size and structure.
 - **Tree-Shaking Detection**: Identify modules and patterns that block tree-shaking.
 - **Duplicate Detection**: Find and quantify duplicate modules with potential savings.
-- **Beautiful HTML Report**: Sleek, dark-themed, responsive report with high-level metrics and deep insights.
+- **Chunk Analysis**: Analyze code-splitting efficiency and get optimization recommendations.
+- **Unused Code Detection**: Identify potentially unused modules in your bundle.
+- **Historical Tracking**: Track bundle size trends over time with `packlyze trends`.
+- **Dependency Graph**: Generate Graphviz DOT files to visualize module dependencies.
+- **Beautiful HTML Report**: Sleek, dark-themed, interactive report with search, filter, and sort.
 - **Baseline Comparison**: Compare current vs previous stats to see regressions and improvements.
+- **Multiple Export Formats**: Export to HTML, CSV, or Markdown.
+- **Config File Support**: Use `.packlyzerc` or `packlyze.config.json` for project defaults.
 - **CLI Tool**: Easy-to-use command-line interface with filters and CI-friendly thresholds.
+- **Brotli Estimates**: Get Brotli compression size estimates (17% smaller than gzip).
 - **TypeScript Ready**: Full TypeScript support with type definitions.
 
 ## 🚀 Quick Start
@@ -199,6 +207,32 @@ packlyze analyze dist/stats.json \
   --max-gzip-size 1.2 \
   --max-initial-size 0.9 \
   --no-html
+```
+
+### Historical tracking
+
+Track bundle size over time:
+
+```bash
+# Automatically saves to .packlyze/history.json after each analysis
+packlyze analyze stats.json
+
+# View trends
+packlyze trends
+
+# View more entries
+packlyze trends --limit 20
+```
+
+### Dependency graph
+
+Generate a dependency graph visualization:
+
+```bash
+packlyze analyze stats.json --dependency-graph graph.dot
+
+# Render with Graphviz
+dot -Tsvg graph.dot -o graph.svg
 ```
 
 ## 🎯 Use Cases

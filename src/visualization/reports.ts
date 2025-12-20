@@ -496,6 +496,12 @@ function generateHTML(result: AnalysisResult, baseline?: AnalysisResult): string
         <div class="metric-value">${(result.metrics.totalGzipSize / 1024 / 1024).toFixed(2)} MB</div>
         ${formatDeltaHtmlMb(baseline?.metrics.totalGzipSize, result.metrics.totalGzipSize)}
       </div>
+      ${result.metrics.totalBrotliSize ? `
+      <div class="metric-card">
+        <div class="metric-label">Brotli Size (est)</div>
+        <div class="metric-value">${(result.metrics.totalBrotliSize / 1024 / 1024).toFixed(2)} MB</div>
+      </div>
+      ` : ''}
       <div class="metric-card">
         <div class="metric-label">Modules</div>
         <div class="metric-value">${result.metrics.moduleCount}</div>
@@ -549,6 +555,91 @@ function generateHTML(result: AnalysisResult, baseline?: AnalysisResult): string
       </div>
     </div>
 
+    ${result.packages.length > 0 ? `
+    <div class="section">
+      <div class="section-inner">
+        <h2>
+          <span>📦 Top Packages by Size</span>
+          <span class="section-tag">npm package breakdown</span>
+        </h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Package</th>
+              <th>Size</th>
+              <th>Modules</th>
+              <th>% of Bundle</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${result.packages.slice(0, 15).map(pkg => `
+              <tr>
+                <td>${escapeHtml(pkg.name)}</td>
+                <td>${(pkg.totalSize / 1024).toFixed(2)} KB</td>
+                <td>${pkg.moduleCount}</td>
+                <td>${pkg.percentage.toFixed(2)}%</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    ` : ''}
+
+    ${result.chunkAnalysis ? `
+    <div class="section">
+      <div class="section-inner">
+        <h2>
+          <span>📦 Chunk Analysis</span>
+          <span class="section-tag">Code-splitting insights</span>
+        </h2>
+        <div style="margin-bottom: 16px;">
+          <p><strong>Average Chunk Size:</strong> ${(result.chunkAnalysis.averageChunkSize / 1024).toFixed(2)} KB</p>
+          <p><strong>Average Modules per Chunk:</strong> ${result.chunkAnalysis.averageModulesPerChunk.toFixed(1)}</p>
+          <p><strong>Largest Chunk:</strong> ${escapeHtml(result.chunkAnalysis.largestChunk.name)} (${(result.chunkAnalysis.largestChunk.size / 1024).toFixed(2)} KB)</p>
+          <p><strong>Initial Chunk Size:</strong> ${(result.chunkAnalysis.initialChunkSize / 1024).toFixed(2)} KB</p>
+        </div>
+        ${result.chunkAnalysis.recommendations.length > 0 ? `
+        <div style="background: rgba(251, 146, 60, 0.1); padding: 12px; border-radius: 8px; border-left: 3px solid var(--warning);">
+          <strong>Recommendations:</strong>
+          <ul style="margin-top: 8px; margin-left: 20px;">
+            ${result.chunkAnalysis.recommendations.map(rec => `<li>${escapeHtml(rec)}</li>`).join('')}
+          </ul>
+        </div>
+        ` : ''}
+      </div>
+    </div>
+    ` : ''}
+
+    ${result.unusedModules && result.unusedModules.length > 0 ? `
+    <div class="section">
+      <div class="section-inner">
+        <h2>
+          <span>🔍 Potentially Unused Modules</span>
+          <span class="section-tag">Dead code detection</span>
+        </h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Module</th>
+              <th>Size</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${result.unusedModules.slice(0, 15).map(module => `
+              <tr>
+                <td>${escapeHtml(module.name)}</td>
+                <td>${(module.size / 1024).toFixed(2)} KB</td>
+                <td>${escapeHtml(module.reason)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    ` : ''}
+
     <div class="section">
       <div class="section-inner">
         <h2>
@@ -599,6 +690,132 @@ function generateHTML(result: AnalysisResult, baseline?: AnalysisResult): string
       <p><span>Packlyze</span> · Advanced JavaScript bundle analysis</p>
     </footer>
   </div>
+
+  <script>
+    // Interactive features: search, filter, sort
+    (function() {
+      // Add search boxes to tables
+      const tables = document.querySelectorAll('table');
+      tables.forEach((table, index) => {
+        const thead = table.querySelector('thead');
+        if (!thead) return;
+        
+        const searchRow = document.createElement('tr');
+        searchRow.className = 'search-row';
+        const th = document.createElement('th');
+        th.colSpan = thead.querySelectorAll('th').length;
+        th.innerHTML = '<input type="text" placeholder="Search..." class="table-search" data-table="' + index + '">';
+        searchRow.appendChild(th);
+        thead.appendChild(searchRow);
+      });
+
+      // Search functionality
+      document.querySelectorAll('.table-search').forEach(input => {
+        input.addEventListener('input', function(e) {
+          const searchTerm = e.target.value.toLowerCase();
+          const tableIndex = parseInt(e.target.dataset.table);
+          const table = document.querySelectorAll('table')[tableIndex];
+          const rows = table.querySelectorAll('tbody tr');
+          
+          rows.forEach(row => {
+            const text = row.textContent.toLowerCase();
+            row.style.display = text.includes(searchTerm) ? '' : 'none';
+          });
+        });
+      });
+
+      // Make table headers sortable
+      document.querySelectorAll('table thead th:not(.search-row th)').forEach((th, index) => {
+        if (th.textContent.trim() === '') return;
+        
+        th.style.cursor = 'pointer';
+        th.style.userSelect = 'none';
+        th.title = 'Click to sort';
+        
+        th.addEventListener('click', function() {
+          const table = th.closest('table');
+          const tbody = table.querySelector('tbody');
+          const rows = Array.from(tbody.querySelectorAll('tr'));
+          const isAscending = th.dataset.sort === 'asc';
+          
+          // Reset all headers
+          table.querySelectorAll('th').forEach(h => {
+            h.dataset.sort = '';
+            h.textContent = h.textContent.replace(' ▲', '').replace(' ▼', '');
+          });
+          
+          // Sort rows
+          rows.sort((a, b) => {
+            const aText = a.cells[index]?.textContent.trim() || '';
+            const bText = b.cells[index]?.textContent.trim() || '';
+            
+            // Try numeric comparison
+            const aNum = parseFloat(aText);
+            const bNum = parseFloat(bText);
+            
+            if (!isNaN(aNum) && !isNaN(bNum)) {
+              return isAscending ? bNum - aNum : aNum - bNum;
+            }
+            
+            // String comparison
+            return isAscending 
+              ? bText.localeCompare(aText)
+              : aText.localeCompare(bText);
+          });
+          
+          // Re-append sorted rows
+          rows.forEach(row => tbody.appendChild(row));
+          
+          // Update header
+          th.dataset.sort = isAscending ? 'desc' : 'asc';
+          th.textContent = th.textContent + (isAscending ? ' ▼' : ' ▲');
+        });
+      });
+
+      // Add expand/collapse for sections
+      document.querySelectorAll('.section h2').forEach(h2 => {
+        const section = h2.closest('.section');
+        if (!section) return;
+        
+        h2.style.cursor = 'pointer';
+        h2.title = 'Click to expand/collapse';
+        
+        h2.addEventListener('click', function() {
+          const inner = section.querySelector('.section-inner');
+          if (inner) {
+            inner.style.display = inner.style.display === 'none' ? '' : 'none';
+          }
+        });
+      });
+
+      // Add CSS for search
+      const style = document.createElement('style');
+      style.textContent = \`
+        .search-row { background: rgba(99, 102, 241, 0.1) !important; }
+        .table-search {
+          width: 100%;
+          padding: 8px;
+          background: rgba(15, 23, 42, 0.8);
+          border: 1px solid rgba(148, 163, 184, 0.3);
+          border-radius: 6px;
+          color: var(--text-main);
+          font-size: 13px;
+        }
+        .table-search:focus {
+          outline: none;
+          border-color: var(--accent);
+          box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+        }
+        th[data-sort] {
+          position: relative;
+        }
+        th:hover {
+          background: rgba(99, 102, 241, 0.1);
+        }
+      \`;
+      document.head.appendChild(style);
+    })();
+  </script>
 </body>
 </html>
   `;

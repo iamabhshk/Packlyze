@@ -7,6 +7,9 @@ import {
   Recommendation,
   BundleMetrics,
   DuplicateModule,
+  PackageStats,
+  ChunkAnalysis,
+  UnusedModule,
   AnalysisResult
 } from '../types.js';
 
@@ -27,8 +30,10 @@ export class Packlyze {
     parsedSize?: number;
   } = {};
   private baseDir: string;
+  private verboseLog?: (message: string) => void;
 
-  constructor(statsPath: string) {
+  constructor(statsPath: string, verboseLog?: (message: string) => void) {
+    this.verboseLog = verboseLog;
     if (!fs.existsSync(statsPath)) {
       throw new Error(`Stats file not found: ${statsPath}`);
     }
@@ -36,27 +41,107 @@ export class Packlyze {
     this.loadStats(statsPath);
   }
 
+  private log(message: string): void {
+    if (this.verboseLog) {
+      this.verboseLog(message);
+    }
+  }
+
   private loadStats(statsPath: string): void {
+    this.log('Reading stats file...');
     const content = fs.readFileSync(statsPath, 'utf-8');
+    this.log(`Stats file size: ${(content.length / 1024).toFixed(2)} KB`);
+    
     try {
+      this.log('Parsing JSON...');
       this.statsData = JSON.parse(content);
+      this.log('Validating stats structure...');
+      this.validateStats();
+      this.log(`Found ${this.statsData.modules?.length || 0} modules, ${this.statsData.chunks?.length || 0} chunks`);
     } catch (e) {
+      if (e instanceof Error && e.message.includes('Invalid stats')) {
+        throw e;
+      }
       throw new Error(`Invalid JSON in stats file: ${e}`);
     }
   }
 
-  async analyze(): Promise<AnalysisResult> {
-    const bundleStats = this.extractBundleStats();
-    const recommendations = this.generateRecommendations(bundleStats);
-    const treeshakingIssues = this.detectTreeshakingIssues();
-    const duplicates = this.findDuplicates();
-    const metrics = this.calculateMetrics(bundleStats);
+  private validateStats(): void {
+    if (!this.statsData || typeof this.statsData !== 'object') {
+      throw new Error('Invalid stats: stats file must be a valid JSON object');
+    }
 
+    // Check for required structure (at least one of assets, modules, or chunks should exist)
+    const hasAssets = Array.isArray(this.statsData.assets);
+    const hasModules = Array.isArray(this.statsData.modules);
+    const hasChunks = Array.isArray(this.statsData.chunks);
+
+    if (!hasAssets && !hasModules && !hasChunks) {
+      throw new Error(
+        'Invalid stats: stats file must contain at least one of: assets, modules, or chunks arrays. ' +
+        'Ensure you generated the stats file correctly (e.g., webpack --profile --json stats.json)'
+      );
+    }
+
+    // Validate modules if present
+    if (hasModules && Array.isArray(this.statsData.modules)) {
+      for (const module of this.statsData.modules) {
+        if (module && typeof module !== 'object') {
+          throw new Error('Invalid stats: all modules must be objects');
+        }
+        if (module && module.size !== undefined && (typeof module.size !== 'number' || module.size < 0)) {
+          throw new Error('Invalid stats: module sizes must be non-negative numbers');
+        }
+      }
+    }
+
+    // Validate assets if present
+    if (hasAssets && Array.isArray(this.statsData.assets)) {
+      for (const asset of this.statsData.assets) {
+        if (asset && typeof asset !== 'object') {
+          throw new Error('Invalid stats: all assets must be objects');
+        }
+        if (asset && asset.size !== undefined && (typeof asset.size !== 'number' || asset.size < 0)) {
+          throw new Error('Invalid stats: asset sizes must be non-negative numbers');
+        }
+      }
+    }
+  }
+
+  async analyze(): Promise<AnalysisResult> {
+    this.log('Extracting bundle statistics...');
+    const bundleStats = this.extractBundleStats();
+    
+    this.log('Analyzing packages...');
+    const packages = this.analyzePackages(bundleStats);
+    
+    this.log('Detecting duplicate modules...');
+    const duplicates = this.findDuplicates();
+    
+    this.log('Detecting tree-shaking issues...');
+    const treeshakingIssues = this.detectTreeshakingIssues();
+    
+    this.log('Generating recommendations...');
+    const recommendations = this.generateRecommendations(bundleStats);
+    
+    this.log('Calculating metrics...');
+    const metrics = this.calculateMetrics(bundleStats);
+    
+    this.log('Analyzing chunks...');
+    const chunkAnalysis = this.analyzeChunks(bundleStats);
+    
+    this.log('Detecting unused modules...');
+    const unusedModules = this.detectUnusedModules(bundleStats);
+
+    this.log('Analysis complete!');
     return {
       bundleStats,
       recommendations,
       treeshakingIssues,
       duplicates,
+      packages,
+      chunkAnalysis,
+      unusedModules,
       metrics,
       timestamp: new Date().toISOString()
     };
@@ -64,11 +149,12 @@ export class Packlyze {
 
   private extractBundleStats(): BundleStats {
     const assets = this.statsData.assets || [];
+    const totalSize = this.getTotalSize();
     const modules = (this.statsData.modules || []).map((m) => ({
       name: m.name || 'unknown',
       size: m.size || 0,
       gzipSize: m.gzipSize,
-      percentage: (m.size || 0) / this.getTotalSize() * 100,
+      percentage: totalSize > 0 ? ((m.size || 0) / totalSize) * 100 : 0,
       reasons: Array.isArray(m.reasons)
         ? (m.reasons as Array<{ moduleName?: string } | string>).map((r) => typeof r === 'string' ? r : r.moduleName ?? '')
         : []
@@ -174,37 +260,225 @@ export class Packlyze {
     return issues.slice(0, 10); // Limit to top 10
   }
 
+  /**
+   * Extract package name from module path.
+   * Handles node_modules paths like:
+   * - node_modules/lodash/index.js -> lodash
+   * - node_modules/@types/node/index.d.ts -> @types/node
+   * - node_modules/react-dom/client.js -> react-dom
+   */
+  private extractPackageName(modulePath: string): string | null {
+    if (!modulePath) return null;
+
+    // Match node_modules packages
+    const nodeModulesMatch = modulePath.match(/node_modules[/\\](@[^/\\]+[/\\][^/\\]+|[^/\\]+)/);
+    if (nodeModulesMatch) {
+      return nodeModulesMatch[1].replace(/[/\\]/g, '/');
+    }
+
+    // For non-node_modules paths, use basename as fallback
+    // This helps catch duplicates in source code (e.g., utils/helper.js and components/helper.js)
+    return path.basename(modulePath);
+  }
+
   private findDuplicates(): DuplicateModule[] {
-    const moduleMap = new Map<string, ModuleInfo[]>();
+    // Group by package name (for node_modules) or basename (for source files)
+    const packageMap = new Map<string, ModuleInfo[]>();
     const duplicates: DuplicateModule[] = [];
+
     (this.statsData.modules || []).forEach((module: ModuleInfo) => {
-      const baseName = path.basename(module.name || '');
-      if (!moduleMap.has(baseName)) {
-        moduleMap.set(baseName, []);
+      const moduleName = module.name || '';
+      const packageName = this.extractPackageName(moduleName) || 'unknown';
+
+      if (!packageMap.has(packageName)) {
+        packageMap.set(packageName, []);
       }
-      moduleMap.get(baseName)!.push(module);
+      packageMap.get(packageName)!.push(module);
     });
-    moduleMap.forEach((modules) => {
+
+    // Find actual duplicates (same package/module appearing multiple times)
+    packageMap.forEach((modules) => {
       if (modules.length > 1) {
-        const totalSize = modules.reduce((s: number, m) => s + (m.size || 0), 0);
-        const minSize = Math.min(...modules.map(m => m.size || 0));
-        duplicates.push({
-          names: modules.map(m => m.name),
-          totalSize,
-          savings: totalSize - minSize
-        });
+        // Only consider it a duplicate if the modules have different full paths
+        // (same package imported from different locations)
+        const uniquePaths = new Set(modules.map(m => m.name));
+        if (uniquePaths.size > 1) {
+          const totalSize = modules.reduce((s: number, m) => s + (m.size || 0), 0);
+          const minSize = Math.min(...modules.map(m => m.size || 0));
+          duplicates.push({
+            names: modules.map(m => m.name),
+            totalSize,
+            savings: totalSize - minSize
+          });
+        }
       }
     });
 
     return duplicates.sort((a, b) => b.totalSize - a.totalSize).slice(0, 10);
   }
 
+  private analyzePackages(stats: BundleStats): PackageStats[] {
+    const packageMap = new Map<string, { modules: ModuleInfo[]; totalGzip: number }>();
+    const bundleTotalSize = stats.size;
+
+    stats.modules.forEach((module) => {
+      const packageName = this.extractPackageName(module.name);
+      if (!packageName) return;
+
+      if (!packageMap.has(packageName)) {
+        packageMap.set(packageName, { modules: [], totalGzip: 0 });
+      }
+
+      const pkg = packageMap.get(packageName)!;
+      pkg.modules.push(module);
+      if (module.gzipSize) {
+        pkg.totalGzip += module.gzipSize;
+      }
+    });
+
+    const packages: PackageStats[] = [];
+    packageMap.forEach((pkg, name) => {
+      const packageTotalSize = pkg.modules.reduce((sum, m) => sum + m.size, 0);
+      packages.push({
+        name,
+        totalSize: packageTotalSize,
+        gzipSize: pkg.totalGzip > 0 ? pkg.totalGzip : undefined,
+        moduleCount: pkg.modules.length,
+        modules: pkg.modules.map(m => m.name),
+        percentage: bundleTotalSize > 0 ? (packageTotalSize / bundleTotalSize) * 100 : 0
+      });
+    });
+
+    return packages
+      .sort((a, b) => b.totalSize - a.totalSize)
+      .slice(0, 20); // Top 20 packages
+  }
+
+  private detectUnusedModules(stats: BundleStats): UnusedModule[] {
+    const unused: UnusedModule[] = [];
+    const importedModules = new Set<string>();
+
+    // Build set of all modules that are imported by others
+    stats.modules.forEach(module => {
+      const reasons = Array.isArray(module.reasons) ? module.reasons : [];
+      reasons.forEach(reason => {
+        // Extract module name from reason (format varies by bundler)
+        if (typeof reason === 'string' && reason !== 'entry' && reason !== 'cjs require') {
+          // Try to extract module path from reason
+          const match = reason.match(/([^\s]+\.(js|ts|jsx|tsx))/);
+          if (match && match[1]) {
+            importedModules.add(match[1]);
+          }
+        }
+      });
+    });
+
+    // Find modules that are not entry points and not imported
+    stats.modules.forEach(module => {
+      const reasons = Array.isArray(module.reasons) ? module.reasons : [];
+      const isEntry = reasons.some(r => {
+        const reasonStr = typeof r === 'string' ? r : String(r);
+        return reasonStr === 'entry' || reasonStr.includes('entry');
+      });
+      const isImported = importedModules.has(module.name);
+      
+      if (!isEntry && !isImported && (module.size || 0) > 0) {
+        // Additional check: module might be in a chunk but not actually used
+        const inChunk = stats.chunks.some(chunk => {
+          const chunkModules = Array.isArray(chunk.modules) ? chunk.modules : [];
+          return chunkModules.includes(module.name);
+        });
+        
+        if (inChunk) {
+          unused.push({
+            name: module.name || 'unknown',
+            size: module.size || 0,
+            reason: 'Module in bundle but no clear import path detected'
+          });
+        }
+      }
+    });
+
+    return unused
+      .sort((a, b) => b.size - a.size)
+      .slice(0, 20); // Top 20 potentially unused modules
+  }
+
+  private analyzeChunks(stats: BundleStats): ChunkAnalysis {
+    const chunks = stats.chunks;
+    if (chunks.length === 0) {
+      return {
+        averageChunkSize: 0,
+        averageModulesPerChunk: 0,
+        largestChunk: { id: 0, name: 'N/A', size: 0, modules: [] },
+        smallestChunk: { id: 0, name: 'N/A', size: 0, modules: [] },
+        initialChunkSize: 0,
+        recommendations: []
+      };
+    }
+
+    const chunkSizes = chunks.map(c => c.size || 0);
+    const totalChunkSize = chunkSizes.reduce((a, b) => a + b, 0);
+    const averageChunkSize = chunks.length > 0 ? totalChunkSize / chunks.length : 0;
+    
+    const modulesPerChunk = chunks.map(c => (c.modules && Array.isArray(c.modules)) ? c.modules.length : 0);
+    const totalModules = modulesPerChunk.reduce((a, b) => a + b, 0);
+    const averageModulesPerChunk = chunks.length > 0 ? totalModules / chunks.length : 0;
+
+    const sortedBySize = [...chunks].sort((a, b) => (b.size || 0) - (a.size || 0));
+    const largestChunk = sortedBySize[0] || { id: 0, name: 'N/A', size: 0, modules: [] };
+    const smallestChunk = sortedBySize[sortedBySize.length - 1] || { id: 0, name: 'N/A', size: 0, modules: [] };
+
+    const initialChunks = chunks.filter(c => {
+      // Try to identify initial chunks
+      const chunkInfo = stats.chunks.find(ch => ch.id === c.id);
+      return chunkInfo && 'initial' in chunkInfo && (chunkInfo as { initial?: boolean }).initial === true;
+    });
+    const initialChunkSize = initialChunks.reduce((sum, c) => sum + (c.size || 0), 0);
+
+    const recommendations: string[] = [];
+    
+    // Large chunks recommendation
+    if (averageChunkSize > 500000) {
+      recommendations.push(`Average chunk size is ${(averageChunkSize / 1024).toFixed(2)}KB - consider splitting large chunks`);
+    }
+    
+    // Too many small chunks
+    if (chunks.length > 20 && averageChunkSize < 50000) {
+      recommendations.push(`Many small chunks (${chunks.length}) - consider combining related chunks`);
+    }
+    
+    // Initial chunk too large
+    if (initialChunkSize > 500000) {
+      recommendations.push(`Initial chunk is ${(initialChunkSize / 1024).toFixed(2)}KB - implement code-splitting for better load times`);
+    }
+    
+    // Chunk size imbalance
+    if (smallestChunk.size > 0 && largestChunk.size > smallestChunk.size * 10) {
+      recommendations.push(`Chunk size imbalance detected - largest chunk is ${(largestChunk.size / smallestChunk.size).toFixed(1)}x larger than smallest`);
+    }
+
+    return {
+      averageChunkSize,
+      averageModulesPerChunk,
+      largestChunk,
+      smallestChunk,
+      initialChunkSize,
+      recommendations
+    };
+  }
+
   private calculateMetrics(stats: BundleStats): BundleMetrics {
     const sizes = stats.modules.map(m => m.size);
     const averageSize = sizes.length > 0 ? sizes.reduce((a, b) => a + b, 0) / sizes.length : 0;
+    const gzipSize = stats.gzipSize || 0;
+    // Brotli is typically 15-20% smaller than gzip, estimate at 17% reduction
+    const brotliSize = gzipSize > 0 ? Math.round(gzipSize * 0.83) : undefined;
+    
     return {
       totalSize: stats.size,
-      totalGzipSize: stats.gzipSize || 0,
+      totalGzipSize: gzipSize,
+      totalBrotliSize: brotliSize,
       moduleCount: stats.modules.length,
       chunkCount: stats.chunks.length,
       largestModule: stats.modules[0] || {
