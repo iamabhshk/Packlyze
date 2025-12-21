@@ -204,7 +204,6 @@ export class Packlyze {
    * Generate webpack config template based on project type
    */
   private generateWebpackConfig(entryPoint: string, isESModule: boolean, hasTypeScript: boolean, framework: string | null): string {
-    const configFileName = isESModule ? 'webpack.config.cjs' : 'webpack.config.js';
     const useTypeScript = hasTypeScript;
     const isReact = framework === 'react';
     
@@ -435,7 +434,6 @@ module.exports = {
       );
       
       let suggestion = '';
-      let createdConfigPath: string | null = null;
       
       if (esModuleConfigError) {
         // ES module config loading error - config has wrong extension
@@ -443,14 +441,14 @@ module.exports = {
         const detectedEntry = this.detectEntryPoint();
         const entryPoint = detectedEntry || './src/index.js';
         
-        try {
-          // Automatically create the correct config file
-          createdConfigPath = this.createWebpackConfig(
-            entryPoint,
-            configCheck.isESModule,
-            configCheck.hasTypeScript,
-            configCheck.framework
-          );
+          try {
+            // Automatically create the correct config file
+            this.createWebpackConfig(
+              entryPoint,
+              configCheck.isESModule,
+              configCheck.hasTypeScript,
+              configCheck.framework
+            );
           
           const currentFileName = configCheck.path ? path.basename(configCheck.path) : 'webpack.config.js';
           
@@ -498,7 +496,7 @@ module.exports = {
           const entryPoint = detectedEntry || './src/index.js';
           
           try {
-            createdConfigPath = this.createWebpackConfig(
+            this.createWebpackConfig(
               entryPoint,
               configCheck.isESModule,
               configCheck.hasTypeScript,
@@ -549,7 +547,7 @@ module.exports = {
           const entryPoint = detectedEntry || './src/index.js';
           
           try {
-            createdConfigPath = this.createWebpackConfig(
+            this.createWebpackConfig(
               entryPoint,
               configCheck.isESModule,
               configCheck.hasTypeScript,
