@@ -127,6 +127,255 @@ export class Packlyze {
     return null;
   }
 
+  /**
+   * Check if webpack config file exists and detect project type
+   */
+  private checkWebpackConfig(): { exists: boolean; path: string | null; isESModule: boolean; hasTypeScript: boolean; framework: string | null; wrongExtension: boolean; correctFileName: string } {
+    const configNames = ['webpack.config.js', 'webpack.config.cjs', 'webpack.config.ts'];
+    // Try project root (same directory as stats.json) or one level up
+    const possibleRoots = [
+      this.baseDir,  // stats.json in project root
+      path.dirname(this.baseDir)  // stats.json in subdirectory
+    ];
+    
+    // First, check project type
+    const projectRoot = possibleRoots[0];
+    const packageJsonPath = path.join(projectRoot, 'package.json');
+    let isESModule = false;
+    let hasTypeScript = false;
+    let framework: string | null = null;
+    
+    if (fs.existsSync(packageJsonPath)) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+        isESModule = pkg.type === 'module';
+        
+        const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+        if (deps.react || deps['react-dom']) {
+          framework = 'react';
+        } else if (deps.vue || deps['@vue/cli-service']) {
+          framework = 'vue';
+        } else if (deps['@angular/core']) {
+          framework = 'angular';
+        }
+        
+        hasTypeScript = !!deps.typescript || fs.existsSync(path.join(projectRoot, 'tsconfig.json'));
+      } catch {
+        // Ignore parse errors
+      }
+    }
+    
+    const correctFileName = isESModule ? 'webpack.config.cjs' : 'webpack.config.js';
+    
+    // Now check for existing config files
+    for (const projectRoot of possibleRoots) {
+      for (const name of configNames) {
+        const configPath = path.join(projectRoot, name);
+        if (fs.existsSync(configPath)) {
+          // Check if the config file has the wrong extension for this project type
+          const wrongExtension = isESModule && name === 'webpack.config.js';
+          
+          return { 
+            exists: true, 
+            path: configPath, 
+            isESModule, 
+            hasTypeScript, 
+            framework,
+            wrongExtension,
+            correctFileName
+          };
+        }
+      }
+    }
+    
+    // Config not found
+    return { 
+      exists: false, 
+      path: null, 
+      isESModule, 
+      hasTypeScript, 
+      framework,
+      wrongExtension: false,
+      correctFileName
+    };
+  }
+
+  /**
+   * Generate webpack config template based on project type
+   */
+  private generateWebpackConfig(entryPoint: string, isESModule: boolean, hasTypeScript: boolean, framework: string | null): string {
+    const configFileName = isESModule ? 'webpack.config.cjs' : 'webpack.config.js';
+    const useTypeScript = hasTypeScript;
+    const isReact = framework === 'react';
+    
+    let config = '';
+    
+    if (isESModule) {
+      // CommonJS config for ES module projects
+      config = `const path = require('path');
+
+module.exports = {
+  entry: '${entryPoint}',
+  
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: 'bundle.js'
+  },
+  
+  resolve: {
+    extensions: ['.js', '.jsx'${useTypeScript ? ", '.ts', '.tsx'" : ''}],
+  },
+  
+  module: {
+    rules: [
+`;
+      
+      if (useTypeScript) {
+        config += `      {
+        test: /\\.(ts|tsx)$/,
+        exclude: /node_modules/,
+        use: {
+          loader: 'ts-loader',
+          options: {
+            transpileOnly: true
+          }
+        }
+      },
+`;
+      }
+      
+      if (isReact && !useTypeScript) {
+        config += `      {
+        test: /\\.(js|jsx)$/,
+        exclude: /node_modules/,
+        use: {
+          loader: 'babel-loader',
+          options: {
+            presets: ['@babel/preset-env', '@babel/preset-react']
+          }
+        }
+      },
+`;
+      }
+      
+      config += `      {
+        test: /\\.(png|jpg|jpeg|gif|svg)$/,
+        type: 'asset/resource'
+      }
+    ]
+  },
+  
+  mode: 'production',
+  
+  stats: {
+    modules: true,
+    chunks: true,
+    chunkModules: true,
+    chunkOrigins: true,
+    assets: true,
+    entrypoints: true
+  }
+};
+`;
+    } else {
+      // Standard CommonJS config
+      config = `const path = require('path');
+
+module.exports = {
+  entry: '${entryPoint}',
+  
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: 'bundle.js'
+  },
+  
+  resolve: {
+    extensions: ['.js', '.jsx'${useTypeScript ? ", '.ts', '.tsx'" : ''}],
+  },
+  
+  module: {
+    rules: [
+`;
+      
+      if (useTypeScript) {
+        config += `      {
+        test: /\\.(ts|tsx)$/,
+        exclude: /node_modules/,
+        use: {
+          loader: 'ts-loader',
+          options: {
+            transpileOnly: true
+          }
+        }
+      },
+`;
+      }
+      
+      if (isReact && !useTypeScript) {
+        config += `      {
+        test: /\\.(js|jsx)$/,
+        exclude: /node_modules/,
+        use: {
+          loader: 'babel-loader',
+          options: {
+            presets: ['@babel/preset-env', '@babel/preset-react']
+          }
+        }
+      },
+`;
+      }
+      
+      config += `      {
+        test: /\\.(png|jpg|jpeg|gif|svg)$/,
+        type: 'asset/resource'
+      }
+    ]
+  },
+  
+  mode: 'production',
+  
+  stats: {
+    modules: true,
+    chunks: true,
+    chunkModules: true,
+    chunkOrigins: true,
+    assets: true,
+    entrypoints: true
+  }
+};
+`;
+    }
+    
+    return config;
+  }
+
+  /**
+   * Automatically create webpack config file
+   */
+  private createWebpackConfig(entryPoint: string, isESModule: boolean, hasTypeScript: boolean, framework: string | null): string {
+    const projectRoot = this.baseDir; // Use stats.json directory as project root
+    const configFileName = isESModule ? 'webpack.config.cjs' : 'webpack.config.js';
+    const configPath = path.join(projectRoot, configFileName);
+    
+    // Check if file already exists
+    if (fs.existsSync(configPath)) {
+      return configPath; // Return existing path
+    }
+    
+    // Generate config content
+    const configContent = this.generateWebpackConfig(entryPoint, isESModule, hasTypeScript, framework);
+    
+    // Write config file
+    try {
+      fs.writeFileSync(configPath, configContent, 'utf-8');
+      this.log(`Created ${configFileName} at ${configPath}`);
+      return configPath;
+    } catch (error) {
+      this.log(`Failed to create ${configFileName}: ${error}`);
+      throw error;
+    }
+  }
+
   private loadStats(statsPath: string): void {
     this.log('Reading stats file...');
     const content = fs.readFileSync(statsPath, 'utf-8');
@@ -179,16 +428,173 @@ export class Packlyze {
         (e.message.includes('./src') || e.message.includes("'./src'") || e.message.includes('"./src"'))
       );
       
+      // Check for ES module config loading errors
+      const esModuleConfigError = errors.find(e => 
+        e.message?.includes('require is not defined in ES module scope') ||
+        e.message?.includes('To treat it as a CommonJS script, rename it to use the \'.cjs\' file extension')
+      );
+      
       let suggestion = '';
-      if (entryPointError) {
+      let createdConfigPath: string | null = null;
+      
+      if (esModuleConfigError) {
+        // ES module config loading error - config has wrong extension
+        const configCheck = this.checkWebpackConfig();
         const detectedEntry = this.detectEntryPoint();
-        if (detectedEntry) {
+        const entryPoint = detectedEntry || './src/index.js';
+        
+        try {
+          // Automatically create the correct config file
+          createdConfigPath = this.createWebpackConfig(
+            entryPoint,
+            configCheck.isESModule,
+            configCheck.hasTypeScript,
+            configCheck.framework
+          );
+          
+          const currentFileName = configCheck.path ? path.basename(configCheck.path) : 'webpack.config.js';
+          
+          suggestion = `\n\n✅ Created ${configCheck.correctFileName} automatically!\n\n` +
+            `Your project uses ES modules, so webpack needs ${configCheck.correctFileName} instead of ${currentFileName}.\n\n` +
+            `🔍 Auto-detected entry point: ${entryPoint}\n` +
+            `📦 Project type: ${configCheck.framework || 'Generic'}${configCheck.hasTypeScript ? ' + TypeScript' : ''} (ES Modules)\n\n` +
+            `💡 Next steps:\n`;
+          
+          if (configCheck.hasTypeScript) {
+            suggestion += `   1. Install required loaders: npm install --save-dev ts-loader typescript\n`;
+          }
+          if (configCheck.framework === 'react' && !configCheck.hasTypeScript) {
+            suggestion += `   1. Install required loaders: npm install --save-dev babel-loader @babel/core @babel/preset-env @babel/preset-react\n`;
+          }
+          
+          suggestion += `   2. Regenerate stats.json: npx webpack --profile --json stats.json\n`;
+        } catch (error) {
+          // If creation fails, fall back to manual instructions
+          const configTemplate = this.generateWebpackConfig(
+            entryPoint,
+            configCheck.isESModule,
+            configCheck.hasTypeScript,
+            configCheck.framework
+          );
+          
+          const currentFileName = configCheck.path ? path.basename(configCheck.path) : 'webpack.config.js';
+          
+          suggestion = `\n\n⚠️  Webpack config file has wrong extension!\n\n` +
+            `Your project uses ES modules (package.json has "type": "module"), but you have ${currentFileName}.\n` +
+            `Webpack can't load CommonJS config files (.js) in ES module projects.\n\n` +
+            `🔍 Auto-detected entry point: ${entryPoint}\n` +
+            `📦 Project type: ${configCheck.framework || 'Generic'}${configCheck.hasTypeScript ? ' + TypeScript' : ''} (ES Modules)\n\n` +
+            `Create ${configCheck.correctFileName} with the following content:\n\n` +
+            `\`\`\`javascript\n${configTemplate}\`\`\`\n\n` +
+            `💡 After creating the config file, regenerate stats.json:\n` +
+            `   npx webpack --profile --json stats.json\n`;
+        }
+      } else if (entryPointError) {
+        const configCheck = this.checkWebpackConfig();
+        const detectedEntry = this.detectEntryPoint();
+        
+        if (!configCheck.exists) {
+          // Webpack config doesn't exist - automatically create it
+          const entryPoint = detectedEntry || './src/index.js';
+          
+          try {
+            createdConfigPath = this.createWebpackConfig(
+              entryPoint,
+              configCheck.isESModule,
+              configCheck.hasTypeScript,
+              configCheck.framework
+            );
+            
+            suggestion = `\n\n✅ Created ${configCheck.correctFileName} automatically!\n\n` +
+              `🔍 Auto-detected entry point: ${entryPoint}\n` +
+              `📦 Project type: ${configCheck.framework || 'Generic'}${configCheck.hasTypeScript ? ' + TypeScript' : ''}${configCheck.isESModule ? ' (ES Modules)' : ''}\n\n` +
+              `💡 Next steps:\n`;
+            
+            if (configCheck.hasTypeScript) {
+              suggestion += `   1. Install required loaders: npm install --save-dev ts-loader typescript\n`;
+            }
+            if (configCheck.framework === 'react' && !configCheck.hasTypeScript) {
+              suggestion += `   1. Install required loaders: npm install --save-dev babel-loader @babel/core @babel/preset-env @babel/preset-react\n`;
+            }
+            
+            suggestion += `   2. Regenerate stats.json: npx webpack --profile --json stats.json\n`;
+          } catch (error) {
+            // If creation fails, fall back to manual instructions
+            const configTemplate = this.generateWebpackConfig(
+              entryPoint,
+              configCheck.isESModule,
+              configCheck.hasTypeScript,
+              configCheck.framework
+            );
+            
+            suggestion = `\n\n📝 Webpack config file not found!\n\n` +
+              `🔍 Auto-detected entry point: ${entryPoint}\n` +
+              `📦 Project type: ${configCheck.framework || 'Generic'}${configCheck.hasTypeScript ? ' + TypeScript' : ''}${configCheck.isESModule ? ' (ES Modules)' : ''}\n\n` +
+              `Create ${configCheck.correctFileName} with the following content:\n\n` +
+              `\`\`\`javascript\n${configTemplate}\`\`\`\n\n` +
+              `💡 After creating the config file, install required loaders:\n`;
+            
+            if (configCheck.hasTypeScript) {
+              suggestion += `   npm install --save-dev ts-loader typescript\n`;
+            }
+            if (configCheck.framework === 'react' && !configCheck.hasTypeScript) {
+              suggestion += `   npm install --save-dev babel-loader @babel/core @babel/preset-env @babel/preset-react\n`;
+            }
+            
+            suggestion += `\n   Then regenerate stats.json:\n` +
+              `   npx webpack --profile --json stats.json\n`;
+          }
+        } else if (configCheck.wrongExtension) {
+          // Config exists but has wrong extension - create the correct one
+          const entryPoint = detectedEntry || './src/index.js';
+          
+          try {
+            createdConfigPath = this.createWebpackConfig(
+              entryPoint,
+              configCheck.isESModule,
+              configCheck.hasTypeScript,
+              configCheck.framework
+            );
+            
+            const currentFileName = path.basename(configCheck.path || 'webpack.config.js');
+            
+            suggestion = `\n\n✅ Created ${configCheck.correctFileName} automatically!\n\n` +
+              `Your project uses ES modules, so webpack needs ${configCheck.correctFileName} instead of ${currentFileName}.\n\n` +
+              `🔍 Auto-detected entry point: ${entryPoint}\n` +
+              `📦 Project type: ${configCheck.framework || 'Generic'}${configCheck.hasTypeScript ? ' + TypeScript' : ''} (ES Modules)\n\n` +
+              `💡 Next steps:\n` +
+              `   1. You can delete ${currentFileName} if you no longer need it\n` +
+              `   2. Regenerate stats.json: npx webpack --profile --json stats.json\n`;
+          } catch (error) {
+            // If creation fails, fall back to manual instructions
+            const configTemplate = this.generateWebpackConfig(
+              entryPoint,
+              configCheck.isESModule,
+              configCheck.hasTypeScript,
+              configCheck.framework
+            );
+            
+            const currentFileName = path.basename(configCheck.path || 'webpack.config.js');
+            
+            suggestion = `\n\n⚠️  Webpack config file has wrong extension!\n\n` +
+              `Your project uses ES modules (package.json has "type": "module"), but you have ${currentFileName}.\n` +
+              `Webpack can't load CommonJS config files (.js) in ES module projects.\n\n` +
+              `🔍 Auto-detected entry point: ${entryPoint}\n` +
+              `📦 Project type: ${configCheck.framework || 'Generic'}${configCheck.hasTypeScript ? ' + TypeScript' : ''} (ES Modules)\n\n` +
+              `Create ${configCheck.correctFileName} with the following content:\n\n` +
+              `\`\`\`javascript\n${configTemplate}\`\`\`\n\n` +
+              `💡 After creating the config file, regenerate stats.json:\n` +
+              `   npx webpack --profile --json stats.json\n`;
+          }
+        } else if (detectedEntry) {
+          // Config exists and extension is correct, but entry point is wrong
           suggestion = `\n\n🔍 Auto-detected entry point: ${detectedEntry}\n` +
-            `   Update your webpack.config.js:\n` +
+            `   Update your ${path.basename(configCheck.path || 'webpack.config.js')}:\n` +
             `   entry: '${detectedEntry}',\n`;
         } else {
           suggestion = `\n\n💡 Tip: Your entry point should be a FILE, not a directory.\n` +
-            `   Common entry points: ./src/App.tsx, ./src/index.jsx, ./src/main.js\n`;
+            `   Common entry points: ./src/App.tsx, ./src/index.jsx, ./src/main.js\n` +
+            `   Update the 'entry' field in your webpack config.\n`;
         }
       }
       
@@ -196,8 +602,8 @@ export class Packlyze {
         `Webpack build failed with ${errors.length} error(s). Cannot analyze bundle.\n\n` +
         `Errors:\n   ${errorMessages}${errors.length > 3 ? `\n   ... and ${errors.length - 3} more error(s)` : ''}` +
         suggestion +
-        `\n💡 Fix the webpack build errors first, then regenerate stats.json:\n` +
-        `   npx webpack --profile --json stats.json`
+        (suggestion ? '' : `\n💡 Fix the webpack build errors first, then regenerate stats.json:\n` +
+        `   npx webpack --profile --json stats.json`)
       );
     }
 

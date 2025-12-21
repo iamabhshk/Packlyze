@@ -11,6 +11,7 @@ Advanced bundle analyzer with insights, recommendations, historical tracking, an
 ## 📊 Features
 
 - **Package Analysis**: Parse and analyze webpack, rollup, and esbuild stats files.
+- **Auto-Detection & Setup Help**: Automatically detects missing webpack configs, entry points, and project types. Provides ready-to-use config templates.
 - **Package-Level Insights**: Group modules by npm package to identify heavy dependencies.
 - **Smart Recommendations**: Suggestions to optimize bundle size and structure.
 - **Tree-Shaking Detection**: Identify modules and patterns that block tree-shaking.
@@ -86,20 +87,32 @@ packlyze analyze stats.json -o ./reports/bundle-report.html
 
 - **"Module not found: Can't resolve './src'":**  
   This means your webpack entry point is pointing to a directory instead of a file.  
-  **Fix:** Update your `webpack.config.js` entry point to point to an actual file:
+  **Packlyze will automatically detect this issue and help you fix it!**
   
-  **How to find your entry point:**
-  1. Check your `package.json` for the `main` field
-  2. Look in your `src` folder for common entry files:
-     - React: `App.tsx`, `App.jsx`, `app.tsx`, `app.jsx`, `index.tsx`, `index.jsx`
-     - Vue: `main.js`, `main.ts`, `app.js`, `app.ts`
-     - Angular: `main.ts`, `main.js`
-     - Generic: `index.js`, `index.ts`, `main.js`, `main.ts`
-  3. Check your `webpack.config.js` or `vite.config.js` for the entry configuration
+  **If you don't have a `webpack.config.js` file:**
+  Packlyze will:
+  - Auto-detect your entry point (e.g., `./src/App.tsx`, `./src/main.tsx`)
+  - Detect your project type (React, Vue, TypeScript, ES Modules, etc.)
+  - Provide a complete, ready-to-use webpack config template
+  - Tell you which file name to use (`.js` vs `.cjs` for ES module projects)
+  - List the required npm packages to install
+  
+  Simply copy the provided config template, install the suggested packages, and regenerate your stats file.
+  
+  **If you already have a `webpack.config.js` file:**
+  Packlyze will:
+  - Auto-detect the correct entry point
+  - Show you exactly what to change in your config
+  
+  **How Packlyze detects entry points:**
+  Packlyze scans your `src` folder for common entry files in this priority order:
+  - React: `App.tsx`, `App.jsx`, `index.tsx`, `index.jsx`
+  - Generic: `main.ts`, `main.js`, `main.tsx`, `main.jsx`, `index.ts`, `index.js`
+  - Vue/Angular: `app.ts`, `app.js`
   
   **Example fixes:**
   ```javascript
-  // webpack.config.js
+  // webpack.config.js (or webpack.config.cjs for ES module projects)
   module.exports = {
     entry: './src/App.tsx',     // ✅ React project
     // OR
@@ -110,14 +123,8 @@ packlyze analyze stats.json -o ./reports/bundle-report.html
   };
   ```
   
-  **Quick check:** List files in your `src` folder:
-  ```bash
-  # Windows
-  dir src
-  
-  # Mac/Linux
-  ls src
-  ```
+  **Note for ES Module projects:**  
+  If your `package.json` has `"type": "module"`, you need to use `webpack.config.cjs` instead of `webpack.config.js`. Packlyze will automatically detect this and suggest the correct filename.
 
 ---
 
