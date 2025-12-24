@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import {
   BundleStats,
   ModuleInfo,
@@ -49,23 +50,34 @@ export class Packlyze {
 
   /**
    * Automatically detect entry point by scanning common locations
+   * Returns entry point path relative to where webpack config will be (this.baseDir)
    */
   private detectEntryPoint(): string | null {
     // Try src in the same directory as stats file, or one level up (common patterns)
     const possibleSrcDirs = [
-      path.join(this.baseDir, 'src'),           // stats.json in project root
-      path.join(path.dirname(this.baseDir), 'src')  // stats.json in subdirectory
+      path.join(this.baseDir, 'src'),           // stats.json in project root, src in same dir
+      path.join(path.dirname(this.baseDir), 'src')  // stats.json in subdirectory, src one level up
     ];
     
     let srcDir: string | null = null;
+    let srcDirRelativePath: string | null = null;
+    
     for (const dir of possibleSrcDirs) {
       if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
         srcDir = dir;
+        // Calculate relative path from webpack config location (this.baseDir)
+        srcDirRelativePath = path.relative(this.baseDir, dir);
+        // Normalize to use forward slashes and ensure it starts with ./
+        if (!srcDirRelativePath.startsWith('.')) {
+          srcDirRelativePath = './' + srcDirRelativePath.replace(/\\/g, '/');
+        } else {
+          srcDirRelativePath = srcDirRelativePath.replace(/\\/g, '/');
+        }
         break;
       }
     }
     
-    if (!srcDir) {
+    if (!srcDir || !srcDirRelativePath) {
       return null;
     }
 
@@ -88,7 +100,13 @@ export class Packlyze {
       // Check for exact matches first (case-sensitive)
       for (const pattern of entryPointPatterns) {
         if (files.includes(pattern)) {
-          return `./src/${pattern}`;
+          const entryFile = path.join(srcDir, pattern);
+          // Verify file exists
+          if (fs.existsSync(entryFile) && fs.statSync(entryFile).isFile()) {
+            // Return path relative to webpack config location
+            const relativePath = path.relative(this.baseDir, entryFile);
+            return relativePath.startsWith('.') ? relativePath.replace(/\\/g, '/') : './' + relativePath.replace(/\\/g, '/');
+          }
         }
       }
 
@@ -97,7 +115,13 @@ export class Packlyze {
         const lowerPattern = pattern.toLowerCase();
         const found = files.find(f => f.toLowerCase() === lowerPattern);
         if (found) {
-          return `./src/${found}`;
+          const entryFile = path.join(srcDir, found);
+          // Verify file exists
+          if (fs.existsSync(entryFile) && fs.statSync(entryFile).isFile()) {
+            // Return path relative to webpack config location
+            const relativePath = path.relative(this.baseDir, entryFile);
+            return relativePath.startsWith('.') ? relativePath.replace(/\\/g, '/') : './' + relativePath.replace(/\\/g, '/');
+          }
         }
       }
 
@@ -113,11 +137,15 @@ export class Packlyze {
         const entryLike = jsFiles.find(f => 
           /^(app|main|index)\./i.test(f)
         );
-        if (entryLike) {
-          return `./src/${entryLike}`;
+        const selectedFile = entryLike || jsFiles[0];
+        const entryFile = path.join(srcDir, selectedFile);
+        
+        // Verify file exists
+        if (fs.existsSync(entryFile) && fs.statSync(entryFile).isFile()) {
+          // Return path relative to webpack config location
+          const relativePath = path.relative(this.baseDir, entryFile);
+          return relativePath.startsWith('.') ? relativePath.replace(/\\/g, '/') : './' + relativePath.replace(/\\/g, '/');
         }
-        // Otherwise return the first JS file
-        return `./src/${jsFiles[0]}`;
       }
     } catch (error) {
       // Silently fail - can't read directory
@@ -125,6 +153,327 @@ export class Packlyze {
     }
 
     return null;
+  }
+
+  /**
+   * Automatically install missing dependencies
+   */
+  public async installMissingDependencies(missingPackages: string[]): Promise<boolean> {
+    if (missingPackages.length === 0) return false;
+    
+    const installCommand = this.generateInstallCommand(missingPackages);
+    if (!installCommand) return false;
+    
+    try {
+      this.log(`Installing missing dependencies: ${missingPackages.join(', ')}...`);
+      execSync(installCommand, { 
+        stdio: 'inherit',
+        cwd: this.baseDir
+      });
+      this.log(`✅ Successfully installed missing dependencies!`);
+      return true;
+    } catch (error) {
+      this.log(`❌ Failed to install dependencies: ${error}`);
+      return false;
+    }
+  }
+
+  /**
+   * Detect missing loaders/dependencies from webpack errors
+   */
+  private detectMissingDependencies(errors: Array<{ message?: string; details?: string }>): string[] {
+    const missingPackages: string[] = [];
+    
+    // Map of loader names to their required npm packages
+    const loaderToPackages: Record<string, string[]> = {
+      'ts-loader': ['ts-loader', 'typescript'],
+      'babel-loader': ['babel-loader', '@babel/core', '@babel/preset-env'],
+      'css-loader': ['css-loader'],
+      'style-loader': ['style-loader'],
+      'sass-loader': ['sass-loader', 'sass'],
+      'less-loader': ['less-loader', 'less'],
+      'file-loader': ['file-loader'],
+      'url-loader': ['url-loader'],
+      'html-loader': ['html-loader'],
+      'vue-loader': ['vue-loader', 'vue'],
+    };
+    
+    // Additional mappings for common module resolution errors
+    const moduleToPackages: Record<string, string[]> = {
+      'typescript': ['typescript'],
+      'react': ['react', 'react-dom'],
+      '@babel/core': ['@babel/core'],
+      '@babel/preset-env': ['@babel/preset-env'],
+      '@babel/preset-react': ['@babel/preset-react'],
+      '@babel/preset-typescript': ['@babel/preset-typescript'],
+    };
+    
+    // Check for "Can't resolve" errors that mention loaders or modules
+    for (const error of errors) {
+      const message = (error.message || '') + ' ' + (error.details || '');
+      
+      // Pattern: "Can't resolve 'ts-loader'" or "Cannot find module 'ts-loader'"
+      const resolveMatch = message.match(/Can'?t resolve ['"]([^'"]+)['"]|Cannot find module ['"]([^'"]+)['"]/i);
+      if (resolveMatch) {
+        const moduleName = resolveMatch[1] || resolveMatch[2];
+        
+        // Check if it's a known loader
+        if (loaderToPackages[moduleName]) {
+          missingPackages.push(...loaderToPackages[moduleName]);
+        } 
+        // Check if it's a known module
+        else if (moduleToPackages[moduleName]) {
+          missingPackages.push(...moduleToPackages[moduleName]);
+        } 
+        // Generic loader pattern (ends with -loader)
+        else if (moduleName.includes('-loader')) {
+          missingPackages.push(moduleName);
+        }
+        // Check for TypeScript-related errors
+        else if (moduleName === 'typescript' || message.includes('typescript')) {
+          missingPackages.push('typescript');
+        }
+      }
+    }
+    
+    // Remove duplicates
+    return [...new Set(missingPackages)];
+  }
+
+  /**
+   * Check if packages are installed by reading package.json
+   */
+  private checkPackagesInstalled(packages: string[]): { missing: string[]; installed: string[] } {
+    const possibleRoots = [
+      this.baseDir,
+      path.dirname(this.baseDir)
+    ];
+    
+    for (const projectRoot of possibleRoots) {
+      const packageJsonPath = path.join(projectRoot, 'package.json');
+      if (fs.existsSync(packageJsonPath)) {
+        try {
+          const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+          const allDeps = {
+            ...(pkg.dependencies || {}),
+            ...(pkg.devDependencies || {}),
+            ...(pkg.peerDependencies || {})
+          };
+          
+          const missing: string[] = [];
+          const installed: string[] = [];
+          
+          for (const pkgName of packages) {
+            // Check exact match
+            if (allDeps[pkgName]) {
+              installed.push(pkgName);
+            } else {
+              // For scoped packages, check if any version is installed
+              if (pkgName.startsWith('@')) {
+                const scope = pkgName.split('/')[0];
+                const isInstalled = Object.keys(allDeps).some(dep => 
+                  dep === pkgName || dep.startsWith(scope + '/')
+                );
+                if (isInstalled) {
+                  installed.push(pkgName);
+                } else {
+                  missing.push(pkgName);
+                }
+              } else {
+                missing.push(pkgName);
+              }
+            }
+          }
+          
+          return { missing, installed };
+        } catch {
+          // If we can't read package.json, assume all are missing
+          return { missing: packages, installed: [] };
+        }
+      }
+    }
+    
+    return { missing: packages, installed: [] };
+  }
+
+  /**
+   * Generate install command for missing packages
+   */
+  private generateInstallCommand(missingPackages: string[]): string {
+    if (missingPackages.length === 0) return '';
+    
+    // Check if npm, yarn, or pnpm is being used
+    const possibleRoots = [this.baseDir, path.dirname(this.baseDir)];
+    let packageManager = 'npm';
+    
+    for (const projectRoot of possibleRoots) {
+      if (fs.existsSync(path.join(projectRoot, 'yarn.lock'))) {
+        packageManager = 'yarn';
+        break;
+      }
+      if (fs.existsSync(path.join(projectRoot, 'pnpm-lock.yaml'))) {
+        packageManager = 'pnpm';
+        break;
+      }
+    }
+    
+    const packagesStr = missingPackages.join(' ');
+    
+    if (packageManager === 'yarn') {
+      return `yarn add --dev ${packagesStr}`;
+    } else if (packageManager === 'pnpm') {
+      return `pnpm add --save-dev ${packagesStr}`;
+    } else {
+      return `npm install --save-dev ${packagesStr}`;
+    }
+  }
+
+  /**
+   * Find project root by looking for package.json
+   */
+  private findProjectRoot(): string[] {
+    const possibleRoots: string[] = [];
+    
+    // Start from baseDir and walk up the directory tree
+    let currentDir = this.baseDir;
+    const maxDepth = 5; // Limit search depth
+    let depth = 0;
+    
+    while (depth < maxDepth && currentDir !== path.dirname(currentDir)) {
+      possibleRoots.push(currentDir);
+      currentDir = path.dirname(currentDir);
+      depth++;
+    }
+    
+    return possibleRoots;
+  }
+
+  /**
+   * Extract TypeScript path aliases from tsconfig.json
+   * Note: Does not handle "extends" - only reads the direct tsconfig.json file
+   */
+  private getTypeScriptPathAliases(): Record<string, string> {
+    // Search in multiple locations: baseDir, parent dirs, and project root (where package.json is)
+    const possibleRoots = this.findProjectRoot();
+    
+    this.log(`Searching for tsconfig.json in: ${possibleRoots.join(', ')}`);
+
+    for (const projectRoot of possibleRoots) {
+      const tsconfigPath = path.join(projectRoot, 'tsconfig.json');
+      this.log(`Checking: ${tsconfigPath}`);
+      
+      if (fs.existsSync(tsconfigPath)) {
+        this.log(`Found tsconfig.json at: ${tsconfigPath}`);
+        try {
+          const tsconfigContent = fs.readFileSync(tsconfigPath, 'utf-8');
+          // Remove comments (simple regex-based approach)
+          // Note: This is a basic implementation and may not handle all edge cases
+          // For production, consider using a proper JSONC parser
+          const cleanedContent = tsconfigContent.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
+          const tsconfig = JSON.parse(cleanedContent);
+          
+          // Check if tsconfig uses "extends" - we can't resolve that without additional tooling
+          if (tsconfig.extends) {
+            this.log(`Note: tsconfig.json uses "extends" - path aliases from extended configs are not automatically resolved`);
+            this.log(`Extended config: ${tsconfig.extends}`);
+          }
+          
+          // Check if compilerOptions exists
+          if (!tsconfig.compilerOptions) {
+            this.log(`Warning: tsconfig.json found but compilerOptions is missing`);
+            continue;
+          }
+          
+          const paths = tsconfig.compilerOptions.paths;
+          if (paths && typeof paths === 'object') {
+            this.log(`Found compilerOptions.paths in tsconfig.json`);
+            const aliases: Record<string, string> = {};
+            
+            for (const [alias, pathArray] of Object.entries(paths)) {
+              // Validate alias key
+              if (!alias || typeof alias !== 'string') {
+                continue;
+              }
+              
+              if (Array.isArray(pathArray) && pathArray.length > 0) {
+                // Take the first path mapping
+                let mappedPath = pathArray[0] as string;
+                
+                // Validate mapped path
+                if (!mappedPath || typeof mappedPath !== 'string') {
+                  continue;
+                }
+                
+                // Remove wildcards from both alias and mapped path
+                // TypeScript: "@/*": ["src/*"] -> webpack: "@": "src"
+                // TypeScript: "@/components/*": ["src/components/*"] -> webpack: "@/components": "src/components"
+                const aliasKey = alias.replace(/\*$/, '');
+                
+                // Skip empty alias keys
+                if (!aliasKey) {
+                  continue;
+                }
+                
+                if (mappedPath.includes('*')) {
+                  mappedPath = mappedPath.replace(/\*$/, '');
+                }
+                
+                // Skip empty mapped paths
+                if (!mappedPath) {
+                  continue;
+                }
+                
+                // Resolve the mapped path relative to tsconfig.json location
+                // The path in tsconfig is relative to the tsconfig.json file location
+                // If the path doesn't start with . or /, it's relative to baseUrl or tsconfig location
+                let resolvedPath: string;
+                if (path.isAbsolute(mappedPath)) {
+                  resolvedPath = mappedPath;
+                } else {
+                  // Check if there's a baseUrl in tsconfig
+                  const baseUrl = tsconfig.compilerOptions?.baseUrl;
+                  if (baseUrl && typeof baseUrl === 'string') {
+                    const baseUrlPath = path.isAbsolute(baseUrl) 
+                      ? baseUrl 
+                      : path.resolve(path.dirname(tsconfigPath), baseUrl);
+                    resolvedPath = path.resolve(baseUrlPath, mappedPath);
+                  } else {
+                    resolvedPath = path.resolve(path.dirname(tsconfigPath), mappedPath);
+                  }
+                }
+                
+                // Validate that the resolved path exists (or at least the directory)
+                const resolvedDir = path.dirname(resolvedPath);
+                if (!fs.existsSync(resolvedDir)) {
+                  this.log(`Warning: Path alias "${aliasKey}" resolves to non-existent directory: ${resolvedDir}`);
+                  // Continue anyway - webpack will handle the error
+                }
+                
+                // Store the absolute path - we'll make it relative in the webpack config generation
+                aliases[aliasKey] = resolvedPath;
+              }
+            }
+            
+            if (Object.keys(aliases).length > 0) {
+              this.log(`Found ${Object.keys(aliases).length} TypeScript path alias(es) in tsconfig.json`);
+              return aliases;
+            }
+          } else {
+            this.log(`tsconfig.json found but compilerOptions.paths is missing or invalid`);
+          }
+        } catch (error) {
+          // Log the error for debugging
+          this.log(`Could not parse tsconfig.json at ${tsconfigPath}: ${error}`);
+          // Continue searching other locations
+        }
+      } else {
+        this.log(`tsconfig.json not found at: ${tsconfigPath}`);
+      }
+    }
+    
+    // If we get here, no tsconfig.json was found or it had no paths
+    this.log(`No tsconfig.json with path aliases found. Searched in: ${possibleRoots.map(p => path.join(p, 'tsconfig.json')).join(', ')}`);
+    return {};
   }
 
   /**
@@ -207,6 +556,50 @@ export class Packlyze {
     const useTypeScript = hasTypeScript;
     const isReact = framework === 'react';
     
+    // Get TypeScript path aliases if available
+    const pathAliases = hasTypeScript ? this.getTypeScriptPathAliases() : {};
+    const hasAliases = Object.keys(pathAliases).length > 0;
+    
+    // Generate alias configuration string
+    let aliasConfig = '';
+    if (hasAliases) {
+      // Determine the project root (where webpack.config will be)
+      const projectRoot = this.baseDir;
+      const aliasEntries = Object.entries(pathAliases)
+        .map(([key, absolutePath]) => {
+          // Escape single quotes in the key if present
+          const escapedKey = key.replace(/'/g, "\\'");
+          
+          // Make the path relative to the project root (where webpack.config will be)
+          let relativePath = path.relative(projectRoot, absolutePath);
+          
+          // Handle edge case: if paths are the same, use '.'
+          if (!relativePath || relativePath === '') {
+            relativePath = '.';
+          }
+          
+          // Handle edge case: if path goes outside project root, use absolute path
+          // This can happen with complex baseUrl configurations
+          if (relativePath.startsWith('..')) {
+            // Use absolute path resolution
+            const normalizedAbsolute = absolutePath.replace(/\\/g, '/');
+            return `    '${escapedKey}': '${normalizedAbsolute}'`;
+          }
+          
+          // Normalize path separators for cross-platform compatibility
+          const normalizedPath = relativePath.replace(/\\/g, '/');
+          
+          // Escape any single quotes in the path
+          const escapedPath = normalizedPath.replace(/'/g, "\\'");
+          
+          // Use path.resolve(__dirname, ...) to ensure correct resolution
+          // __dirname in webpack config will be the project root
+          return `    '${escapedKey}': path.resolve(__dirname, '${escapedPath}')`;
+        })
+        .join(',\n');
+      aliasConfig = `,\n    alias: {\n${aliasEntries}\n    }`;
+    }
+    
     let config = '';
     
     if (isESModule) {
@@ -222,7 +615,7 @@ module.exports = {
   },
   
   resolve: {
-    extensions: ['.js', '.jsx'${useTypeScript ? ", '.ts', '.tsx'" : ''}],
+    extensions: ['.js', '.jsx'${useTypeScript ? ", '.ts', '.tsx'" : ''}]${aliasConfig},
   },
   
   module: {
@@ -289,7 +682,7 @@ module.exports = {
   },
   
   resolve: {
-    extensions: ['.js', '.jsx'${useTypeScript ? ", '.ts', '.tsx'" : ''}],
+    extensions: ['.js', '.jsx'${useTypeScript ? ", '.ts', '.tsx'" : ''}]${aliasConfig},
   },
   
   module: {
@@ -353,13 +746,122 @@ module.exports = {
    */
   private createWebpackConfig(entryPoint: string, isESModule: boolean, hasTypeScript: boolean, framework: string | null): string {
     const projectRoot = this.baseDir; // Use stats.json directory as project root
+    
+    // Validate project root exists and is writable
+    if (!fs.existsSync(projectRoot)) {
+      throw new Error(`Project root directory does not exist: ${projectRoot}`);
+    }
+    
+    const stats = fs.statSync(projectRoot);
+    if (!stats.isDirectory()) {
+      throw new Error(`Project root is not a directory: ${projectRoot}`);
+    }
+    
     const configFileName = isESModule ? 'webpack.config.cjs' : 'webpack.config.js';
     const configPath = path.join(projectRoot, configFileName);
     
     // Check if file already exists
     if (fs.existsSync(configPath)) {
+      // Check if it's actually a file (not a directory)
+      const existingStats = fs.statSync(configPath);
+      if (!existingStats.isFile()) {
+        throw new Error(`Path exists but is not a file: ${configPath}`);
+      }
+      
+      // Check if we need to regenerate the config (e.g., if path aliases are missing)
+      const pathAliases = hasTypeScript ? this.getTypeScriptPathAliases() : {};
+      const hasAliases = Object.keys(pathAliases).length > 0;
+      
+      if (hasAliases) {
+        // Read existing config to check if it has aliases
+        try {
+          const existingConfig = fs.readFileSync(configPath, 'utf-8');
+          // Check if the config has a resolve.alias section
+          const hasAliasSection = existingConfig.includes('resolve:') && 
+                                  existingConfig.includes('alias:');
+          
+          if (!hasAliasSection) {
+            // Config exists but doesn't have aliases - regenerate it
+            this.log(`Regenerating webpack config to include path aliases...`);
+            const configContent = this.generateWebpackConfig(entryPoint, isESModule, hasTypeScript, framework);
+            fs.writeFileSync(configPath, configContent, 'utf-8');
+            this.log(`Updated ${configFileName} with path alias configuration`);
+            return configPath;
+          }
+        } catch (error) {
+          // If we can't read the existing config, regenerate it
+          this.log(`Could not read existing config, regenerating...`);
+          const configContent = this.generateWebpackConfig(entryPoint, isESModule, hasTypeScript, framework);
+          fs.writeFileSync(configPath, configContent, 'utf-8');
+          this.log(`Regenerated ${configFileName} with path alias configuration`);
+          return configPath;
+        }
+      }
+      
+      this.log(`Webpack config already exists at ${configPath}`);
       return configPath; // Return existing path
     }
+    
+    // Validate entry point exists and fix path if needed
+    let entryPointPath: string;
+    let finalEntryPoint = entryPoint;
+    
+    if (path.isAbsolute(entryPoint)) {
+      entryPointPath = entryPoint;
+    } else {
+      // Resolve relative to project root (where webpack config will be)
+      entryPointPath = path.resolve(projectRoot, entryPoint);
+    }
+    
+    // If entry point doesn't exist at the specified path, try to find it
+    if (!fs.existsSync(entryPointPath)) {
+      this.log(`Warning: Entry point does not exist at: ${entryPointPath}`);
+      
+      // Try to find the correct path
+      const entryFileName = path.basename(entryPoint);
+      const possiblePaths = [
+        path.join(projectRoot, 'src', entryFileName),           // src/App.tsx in same dir as stats.json
+        path.join(path.dirname(projectRoot), 'src', entryFileName), // src/App.tsx one level up
+        path.join(projectRoot, entryFileName),                  // App.tsx in same dir as stats.json
+      ];
+      
+      for (const possiblePath of possiblePaths) {
+        if (fs.existsSync(possiblePath) && fs.statSync(possiblePath).isFile()) {
+          // Found it! Update the entry point to the correct relative path
+          const correctRelative = path.relative(projectRoot, possiblePath);
+          finalEntryPoint = correctRelative.startsWith('.') 
+            ? correctRelative.replace(/\\/g, '/') 
+            : './' + correctRelative.replace(/\\/g, '/');
+          entryPointPath = possiblePath;
+          this.log(`✅ Found entry point at: ${entryPointPath}`);
+          this.log(`✅ Updated entry point in config to: ${finalEntryPoint}`);
+          break;
+        }
+      }
+      
+      // If still not found, log warning but continue
+      if (!fs.existsSync(entryPointPath)) {
+        this.log(`Warning: Could not find entry point file: ${entryFileName}`);
+        this.log(`Warning: Searched in: ${possiblePaths.join(', ')}`);
+        // Continue anyway - webpack will handle the error
+      }
+    } else {
+      // Verify it's actually a file
+      const stats = fs.statSync(entryPointPath);
+      if (!stats.isFile()) {
+        this.log(`Warning: Entry point is not a file: ${entryPointPath}`);
+      } else {
+        // Verify the path is correct relative to project root
+        const relativePath = path.relative(projectRoot, entryPointPath);
+        finalEntryPoint = relativePath.startsWith('.') 
+          ? relativePath.replace(/\\/g, '/') 
+          : './' + relativePath.replace(/\\/g, '/');
+        this.log(`✅ Entry point verified: ${entryPointPath} (using: ${finalEntryPoint})`);
+      }
+    }
+    
+    // Use the corrected entry point
+    entryPoint = finalEntryPoint;
     
     // Generate config content
     const configContent = this.generateWebpackConfig(entryPoint, isESModule, hasTypeScript, framework);
@@ -370,17 +872,51 @@ module.exports = {
       this.log(`Created ${configFileName} at ${configPath}`);
       return configPath;
     } catch (error) {
-      this.log(`Failed to create ${configFileName}: ${error}`);
-      throw error;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log(`Failed to create ${configFileName}: ${errorMessage}`);
+      
+      // Provide helpful error message
+      if (errorMessage.includes('EACCES') || errorMessage.includes('permission')) {
+        throw new Error(`Permission denied: Cannot write to ${configPath}\n💡 Check file permissions or run with appropriate privileges`);
+      }
+      if (errorMessage.includes('ENOSPC')) {
+        throw new Error(`No space left on device: Cannot write ${configPath}`);
+      }
+      throw new Error(`Failed to create webpack config: ${errorMessage}`);
     }
   }
 
   private loadStats(statsPath: string): void {
     this.log('Reading stats file...');
-    const content = fs.readFileSync(statsPath, 'utf-8');
-    this.log(`Stats file size: ${(content.length / 1024).toFixed(2)} KB`);
+    
+    // Check if file exists and is readable
+    if (!fs.existsSync(statsPath)) {
+      throw new Error(`Stats file not found: ${statsPath}`);
+    }
+    
+    // Check if it's a file (not a directory)
+    const stats = fs.statSync(statsPath);
+    if (!stats.isFile()) {
+      throw new Error(`Path is not a file: ${statsPath}`);
+    }
+    
+    // Check file size (warn if very large)
+    const fileSizeKB = stats.size / 1024;
+    const fileSizeMB = fileSizeKB / 1024;
+    this.log(`Stats file size: ${fileSizeKB.toFixed(2)} KB`);
+    
+    if (fileSizeMB > 100) {
+      this.log(`Warning: Stats file is very large (${fileSizeMB.toFixed(2)} MB). Parsing may take a while...`);
+    }
     
     try {
+      const content = fs.readFileSync(statsPath, 'utf-8');
+      
+      // Check if file is empty
+      if (!content || content.trim().length === 0) {
+        throw new Error('Stats file is empty');
+      }
+      
       this.log('Parsing JSON...');
       this.statsData = JSON.parse(content);
       this.log('Validating stats structure...');
@@ -398,10 +934,16 @@ module.exports = {
       
       this.log(`Found ${topLevelModules} top-level modules, ${chunkModules} modules in chunks, ${chunks.length} chunks`);
     } catch (e) {
+      if (e instanceof SyntaxError) {
+        throw new Error(`Invalid JSON in stats file: ${e.message}\n💡 Make sure the stats file was generated correctly (e.g., webpack --profile --json stats.json)`);
+      }
       if (e instanceof Error && e.message.includes('Invalid stats')) {
         throw e;
       }
-      throw new Error(`Invalid JSON in stats file: ${e}`);
+      if (e instanceof Error && e.message.includes('empty')) {
+        throw e;
+      }
+      throw new Error(`Error reading stats file: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -596,13 +1138,141 @@ module.exports = {
         }
       }
       
-      throw new Error(
-        `Webpack build failed with ${errors.length} error(s). Cannot analyze bundle.\n\n` +
-        `Errors:\n   ${errorMessages}${errors.length > 3 ? `\n   ... and ${errors.length - 3} more error(s)` : ''}` +
-        suggestion +
-        (suggestion ? '' : `\n💡 Fix the webpack build errors first, then regenerate stats.json:\n` +
-        `   npx webpack --profile --json stats.json`)
-      );
+      // Check for missing dependencies/loaders
+      const missingDeps = this.detectMissingDependencies(errors);
+      const dependencyCheck = missingDeps.length > 0 ? this.checkPackagesInstalled(missingDeps) : null;
+      
+      let dependencySuggestion = '';
+      if (dependencyCheck && dependencyCheck.missing.length > 0) {
+        const installCommand = this.generateInstallCommand(dependencyCheck.missing);
+        dependencySuggestion = `\n\n📦 Missing Dependencies Detected!\n` +
+          `   The following packages are required but not installed:\n` +
+          `   ${dependencyCheck.missing.map(p => `     - ${p}`).join('\n')}\n\n` +
+          `   💡 Install them with:\n` +
+          `      ${installCommand}\n\n` +
+          `   Then regenerate stats.json:\n` +
+          `      npx webpack --profile --json stats.json\n`;
+      }
+      
+      // Check if errors are related to path aliases
+      // Look for errors containing '@/' or '@\' in the message
+      const pathAliasErrors = errors.filter(e => {
+        const message = e.message || '';
+        const details = e.details || '';
+        const fullMessage = `${message} ${details}`;
+        return (message.includes("Can't resolve") || message.includes("Cannot resolve")) &&
+               (fullMessage.includes('@/') || fullMessage.includes('@\\') || fullMessage.includes("'@"));
+      });
+      
+      let pathAliasSuggestion = '';
+      let configRegenerated = false;
+      
+      if (pathAliasErrors.length > 0) {
+        const pathAliases = this.getTypeScriptPathAliases();
+        const hasAliases = Object.keys(pathAliases).length > 0;
+        const configCheck = this.checkWebpackConfig();
+        
+        if (hasAliases) {
+          // Try to automatically regenerate the config with path aliases
+          if (configCheck.exists && configCheck.hasTypeScript) {
+            try {
+              const detectedEntry = this.detectEntryPoint();
+              const entryPoint = detectedEntry || './src/index.js';
+              
+              // Attempt to regenerate the config with path aliases
+              this.createWebpackConfig(
+                entryPoint,
+                configCheck.isESModule,
+                configCheck.hasTypeScript,
+                configCheck.framework
+              );
+              
+              configRegenerated = true;
+              pathAliasSuggestion = `\n\n✅ Regenerated ${configCheck.correctFileName} with path alias configuration!\n` +
+                `   Found ${Object.keys(pathAliases).length} path alias(es) in tsconfig.json:\n` +
+                `   ${Object.keys(pathAliases).slice(0, 3).map(k => `     - ${k}`).join('\n')}${Object.keys(pathAliases).length > 3 ? `\n     ... and ${Object.keys(pathAliases).length - 3} more` : ''}\n\n` +
+                `   💡 Next steps:\n` +
+                `      1. Regenerate stats.json: npx webpack --profile --json stats.json\n` +
+                `      2. Run packlyze analyze stats.json again\n`;
+            } catch (regenerateError) {
+              // If regeneration fails, provide manual instructions
+              pathAliasSuggestion = `\n\n⚠️  Path alias errors detected!\n` +
+                `   Found ${Object.keys(pathAliases).length} path alias(es) in tsconfig.json:\n` +
+                `   ${Object.keys(pathAliases).slice(0, 3).map(k => `     - ${k}`).join('\n')}${Object.keys(pathAliases).length > 3 ? `\n     ... and ${Object.keys(pathAliases).length - 3} more` : ''}\n\n` +
+                `   The webpack config needs to include these path aliases.\n` +
+                `   💡 Solution:\n` +
+                `      1. Delete ${configCheck.correctFileName} (if it exists)\n` +
+                `      2. Run packlyze analyze again (it will regenerate the config with path aliases)\n` +
+                `      3. Regenerate stats.json: npx webpack --profile --json stats.json\n` +
+                `      4. Run packlyze analyze stats.json again\n`;
+            }
+          } else {
+            // Config doesn't exist or TypeScript not detected
+            pathAliasSuggestion = `\n\n⚠️  Path alias errors detected!\n` +
+              `   Found ${Object.keys(pathAliases).length} path alias(es) in tsconfig.json:\n` +
+              `   ${Object.keys(pathAliases).slice(0, 3).map(k => `     - ${k}`).join('\n')}${Object.keys(pathAliases).length > 3 ? `\n     ... and ${Object.keys(pathAliases).length - 3} more` : ''}\n\n` +
+              `   The webpack config needs to include these path aliases.\n` +
+              `   💡 Solution:\n` +
+              `      1. Delete ${configCheck.correctFileName} (if it exists)\n` +
+              `      2. Run packlyze analyze again (it will regenerate the config with path aliases)\n` +
+              `      3. Regenerate stats.json: npx webpack --profile --json stats.json\n` +
+              `      4. Run packlyze analyze stats.json again\n`;
+          }
+        } else {
+          // Get the search paths for better error message
+          const searchPaths = this.findProjectRoot();
+          const searchedLocations = searchPaths.map(p => path.join(p, 'tsconfig.json')).join('\n     - ');
+          
+          pathAliasSuggestion = `\n\n⚠️  Path alias errors detected, but no path aliases found in tsconfig.json.\n\n` +
+            `   Searched for tsconfig.json in:\n` +
+            `     - ${searchedLocations}\n\n` +
+            `   Make sure:\n` +
+            `     1. tsconfig.json exists in one of the locations above\n` +
+            `     2. tsconfig.json has compilerOptions.paths configured:\n` +
+            `        {\n` +
+            `          "compilerOptions": {\n` +
+            `            "baseUrl": ".",\n` +
+            `            "paths": {\n` +
+            `              "@/*": ["src/*"]\n` +
+            `            }\n` +
+            `          }\n` +
+            `        }\n` +
+            `     3. If using "extends", path aliases must be in the main tsconfig.json (not just in extended config)\n` +
+            `     4. Run with --verbose to see detailed search logs\n`;
+        }
+      }
+      
+      // Build the error message
+      let errorMessage = `Webpack build failed with ${errors.length} error(s). Cannot analyze bundle.\n\n` +
+        `Errors:\n   ${errorMessages}${errors.length > 3 ? `\n   ... and ${errors.length - 3} more error(s)` : ''}`;
+      
+      // Add dependency suggestion first (most actionable)
+      if (dependencySuggestion) {
+        errorMessage += dependencySuggestion;
+      }
+      
+      // Add path alias suggestion if config was regenerated (important)
+      if (configRegenerated) {
+        errorMessage += pathAliasSuggestion;
+      }
+      
+      // Add other suggestions
+      if (suggestion) {
+        errorMessage += suggestion;
+      }
+      
+      // Add path alias suggestion if not already added
+      if (!configRegenerated && pathAliasSuggestion) {
+        errorMessage += pathAliasSuggestion;
+      }
+      
+      // Add default suggestion if no other suggestions
+      if (!suggestion && !pathAliasSuggestion && !dependencySuggestion) {
+        errorMessage += `\n💡 Fix the webpack build errors first, then regenerate stats.json:\n` +
+          `   npx webpack --profile --json stats.json`;
+      }
+      
+      throw new Error(errorMessage);
     }
 
     // Check for required structure (at least one of assets, modules, or chunks should exist)
@@ -678,7 +1348,7 @@ module.exports = {
     
     this.log('Calculating metrics...');
     const metrics = this.calculateMetrics(bundleStats);
-    
+
     this.log('Analyzing chunks...');
     const chunkAnalysis = this.analyzeChunks(bundleStats);
     
@@ -708,13 +1378,13 @@ module.exports = {
     // First, try top-level modules array
     if (Array.isArray(this.statsData.modules) && this.statsData.modules.length > 0) {
       modules = this.statsData.modules.map((m) => ({
-        name: m.name || 'unknown',
-        size: m.size || 0,
-        gzipSize: m.gzipSize,
+      name: m.name || 'unknown',
+      size: m.size || 0,
+      gzipSize: m.gzipSize,
         percentage: 0, // Will calculate after we know total size
-        reasons: Array.isArray(m.reasons)
-          ? (m.reasons as Array<{ moduleName?: string } | string>).map((r) => typeof r === 'string' ? r : r.moduleName ?? '')
-          : []
+      reasons: Array.isArray(m.reasons)
+        ? (m.reasons as Array<{ moduleName?: string } | string>).map((r) => typeof r === 'string' ? r : r.moduleName ?? '')
+        : []
       }));
     } else {
       // Extract modules from chunks (webpack 5+ format)
@@ -801,7 +1471,7 @@ module.exports = {
   }
 
   private getTotalSize(): number {
-    const assets = this.statsData.assets || [];
+  const assets = this.statsData.assets || [];
     const assetSize = assets.reduce((sum: number, asset) => sum + (asset.size || 0), 0);
     
     // If assets are empty or zero, try to calculate from modules
@@ -844,7 +1514,7 @@ module.exports = {
   }
 
   private getTotalGzipSize(): number {
-    const assets = this.statsData.assets || [];
+  const assets = this.statsData.assets || [];
     const assetGzipSize = assets.reduce((sum: number, asset) => sum + (asset.gzipSize || 0), 0);
     
     // If assets are empty or zero, try to calculate from modules
@@ -1010,13 +1680,13 @@ module.exports = {
         // (same package imported from different locations)
         const uniquePaths = new Set(modules.map(m => m.name));
         if (uniquePaths.size > 1) {
-          const totalSize = modules.reduce((s: number, m) => s + (m.size || 0), 0);
-          const minSize = Math.min(...modules.map(m => m.size || 0));
-          duplicates.push({
-            names: modules.map(m => m.name),
-            totalSize,
-            savings: totalSize - minSize
-          });
+        const totalSize = modules.reduce((s: number, m) => s + (m.size || 0), 0);
+        const minSize = Math.min(...modules.map(m => m.size || 0));
+        duplicates.push({
+          names: modules.map(m => m.name),
+          totalSize,
+          savings: totalSize - minSize
+        });
         }
       }
     });

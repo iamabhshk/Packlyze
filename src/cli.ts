@@ -28,6 +28,7 @@ interface AnalyzeOptions {
   baseline?: string;
   format?: string;
   dependencyGraph?: string;
+  autoInstall?: boolean;
 }
 
 // Read version from package.json
@@ -65,6 +66,7 @@ program
   .option('--max-initial-size <mb>', 'Fail if initial bundle size exceeds this value (in MB)', parseFloat)
   .option('--baseline <statsFile>', 'Baseline stats file to compare against')
   .option('--dependency-graph <path>', 'Generate dependency graph DOT file')
+  .option('--auto-install', 'Automatically install missing dependencies when detected')
   .action(async (statsFile: string, options: AnalyzeOptions) => {
     // Load config file and merge with CLI options
     const config = loadConfig();
@@ -78,19 +80,33 @@ program
       }
     };
 
+    const resolvedStatsFile: string = path.isAbsolute(statsFile) 
+      ? statsFile 
+      : path.resolve(process.cwd(), statsFile);
+    
     try {
-      // Validate file exists
+      // Validate file exists - resolve relative paths
       logVerbose('Validating stats file...');
-      if (!fs.existsSync(statsFile)) {
+      
+      if (!fs.existsSync(resolvedStatsFile)) {
         throw new Error(
-          `File not found: ${statsFile}\n` +
+          `File not found: ${statsFile}${resolvedStatsFile !== statsFile ? ` (resolved to: ${resolvedStatsFile})` : ''}\n` +
           `💡 Tip: Generate stats file with: webpack --profile --json ${statsFile}\n` +
           `   Or for other bundlers, check the Packlyze documentation.`
         );
       }
+      
+      // Check if it's actually a file
+      const stats = fs.statSync(resolvedStatsFile);
+      if (!stats.isFile()) {
+        throw new Error(
+          `Path is not a file: ${statsFile}\n` +
+          `💡 Make sure you're pointing to a stats.json file, not a directory.`
+        );
+      }
 
       logVerbose('Loading and parsing stats file...');
-      const analyzer = new Packlyze(statsFile, mergedOptions.verbose ? logVerbose : undefined);
+      const analyzer = new Packlyze(resolvedStatsFile, mergedOptions.verbose ? logVerbose : undefined);
       
       logVerbose('Extracting bundle statistics...');
       const result = await analyzer.analyze();
@@ -99,13 +115,27 @@ program
 
       if (mergedOptions.baseline) {
         logVerbose('Loading baseline file...');
-        const baselinePath = mergedOptions.baseline as string;
+        const baselinePathInput = mergedOptions.baseline as string;
+        const baselinePath = path.isAbsolute(baselinePathInput)
+          ? baselinePathInput
+          : path.resolve(process.cwd(), baselinePathInput);
+        
         if (!fs.existsSync(baselinePath)) {
           throw new Error(
-            `Baseline file not found: ${baselinePath}\n` +
+            `Baseline file not found: ${baselinePathInput}${baselinePath !== baselinePathInput ? ` (resolved to: ${baselinePath})` : ''}\n` +
             `💡 Tip: Use a previous stats.json file as baseline for comparison.`
           );
         }
+        
+        // Check if it's actually a file
+        const baselineStats = fs.statSync(baselinePath);
+        if (!baselineStats.isFile()) {
+          throw new Error(
+            `Baseline path is not a file: ${baselinePathInput}\n` +
+            `💡 Make sure you're pointing to a stats.json file, not a directory.`
+          );
+        }
+        
         logVerbose('Analyzing baseline...');
         const baselineAnalyzer = new Packlyze(baselinePath, mergedOptions.verbose ? logVerbose : undefined);
         baselineResult = await baselineAnalyzer.analyze();
@@ -180,7 +210,42 @@ program
       }
     } catch (error) {
       spinner.fail('Analysis failed');
-      console.error(chalk.red(`Error: ${String(error)}`));
+      const errorMessage = String(error);
+      console.error(chalk.red(`Error: ${errorMessage}`));
+      
+      // Check if auto-install is enabled and error mentions missing dependencies
+      if (mergedOptions.autoInstall && errorMessage.includes('Missing Dependencies Detected')) {
+        // Extract missing packages from error message
+        const missingDepsMatch = errorMessage.match(/The following packages are required but not installed:\n\s+((?:- [^\n]+\n?)+)/);
+        if (missingDepsMatch) {
+          const packagesList = missingDepsMatch[1];
+          const packages = packagesList.match(/- ([^\n]+)/g)?.map(p => p.replace('- ', '')) || [];
+          
+          if (packages.length > 0) {
+            console.log(chalk.yellow('\n🔧 Auto-install enabled. Installing missing dependencies...\n'));
+            
+            try {
+              // Use the stats file path (resolved or original)
+              const statsPath = resolvedStatsFile || statsFile;
+              const analyzer = new Packlyze(statsPath, mergedOptions.verbose ? logVerbose : undefined);
+              const installed = await analyzer.installMissingDependencies(packages);
+              
+              if (installed) {
+                console.log(chalk.green('\n✅ Dependencies installed! Regenerating stats.json...\n'));
+                // Note: User still needs to regenerate stats.json manually
+                console.log(chalk.cyan('💡 Next step: Run the following command:\n'));
+                console.log(chalk.white('   npx webpack --profile --json stats.json\n'));
+                console.log(chalk.cyan('   Then run packlyze analyze again:\n'));
+                console.log(chalk.white('   packlyze analyze stats.json\n'));
+              }
+            } catch (installError) {
+              console.error(chalk.red(`\n❌ Failed to auto-install dependencies: ${installError}`));
+              console.log(chalk.yellow('\n💡 Please install the missing dependencies manually and try again.\n'));
+            }
+          }
+        }
+      }
+      
       process.exit(1);
     }
   });

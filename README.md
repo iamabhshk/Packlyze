@@ -65,25 +65,143 @@ npx packlyze analyze stats.json
 packlyze analyze stats.json -o ./reports/bundle-report.html
 ```
 
+## 🎯 Complete Workflow Example
+
+Here's a complete step-by-step workflow for analyzing your bundle:
+
+### **Step 1: Install Packlyze**
+```bash
+# Option 1: Install globally (recommended)
+npm install -g packlyze
+
+# Option 2: Use with npx (no installation)
+npx packlyze --help
+```
+
+### **Step 2: Generate Stats File**
+```bash
+# Make sure webpack is installed
+npm install --save-dev webpack webpack-cli
+
+# Generate stats.json
+npx webpack --profile --json stats.json
+```
+
+### **Step 3: Analyze with Packlyze**
+```bash
+# Basic analysis
+packlyze analyze stats.json
+
+# With auto-install for missing dependencies
+packlyze analyze stats.json --auto-install
+
+# With custom output path
+packlyze analyze stats.json -o ./reports/bundle-report.html
+
+# JSON output (for CI/scripts)
+packlyze analyze stats.json --json
+```
+
+### **Step 4: Handle Common Issues**
+
+**If you see missing dependency errors:**
+```bash
+# Packlyze will show you the exact command, or use auto-install:
+packlyze analyze stats.json --auto-install
+
+# Then regenerate stats.json
+npx webpack --profile --json stats.json
+
+# Analyze again
+packlyze analyze stats.json
+```
+
+**If you see path alias errors:**
+```bash
+# Packlyze will automatically regenerate your webpack config with path aliases
+packlyze analyze stats.json
+
+# Then regenerate stats.json
+npx webpack --profile --json stats.json
+
+# Analyze again
+packlyze analyze stats.json
+```
+
+**If you see entry point errors:**
+```bash
+# Packlyze will automatically create/update your webpack config
+packlyze analyze stats.json
+
+# Install any missing loaders (Packlyze will tell you which ones)
+npm install --save-dev ts-loader typescript  # Example
+
+# Regenerate stats.json
+npx webpack --profile --json stats.json
+
+# Analyze again
+packlyze analyze stats.json
+```
+
 ---
 
 ## 🐛 Common Issues & Solutions
 
-- **"Stats file not found":**  
-  Make sure `stats.json` exists in your folder.  
-  Generate it using your bundler (see above).
+### **"Stats file not found"**
+Make sure `stats.json` exists in your folder.  
+Generate it using your bundler (see above).
 
-- **"Invalid JSON in stats file":**  
-  Your stats file may be corrupted or not plain JSON.  
-  - Delete the file and re-run the correct webpack command.
-  - Open `stats.json` in a text editor; it should start with `{` and be readable.
+### **"Invalid JSON in stats file"**
+Your stats file may be corrupted or not plain JSON.  
+- Delete the file and re-run the correct webpack command.
+- Open `stats.json` in a text editor; it should start with `{` and be readable.
 
-- **"webpack not recognized":**  
-  Install webpack locally in your project:
-  ```bash
-  npm install --save-dev webpack webpack-cli
-  ```
-  Then use `npx webpack ...` to generate stats.
+### **"webpack not recognized"**
+Install webpack locally in your project:
+```bash
+npm install --save-dev webpack webpack-cli
+```
+Then use `npx webpack ...` to generate stats.
+
+### **"Module not found: Can't resolve 'ts-loader'" or Missing Dependencies**
+**Packlyze automatically detects missing dependencies!**
+
+When webpack errors mention missing loaders (like `ts-loader`, `babel-loader`, etc.), Packlyze will:
+1. ✅ **Detect** which packages are missing
+2. ✅ **Check** if they're installed in your `package.json`
+3. ✅ **Show** the exact install command you need to run
+4. ✅ **Optionally install** them automatically with `--auto-install` flag
+
+**Example Error:**
+```
+Module not found: Error: Can't resolve 'ts-loader'
+```
+
+**Packlyze will show:**
+```
+📦 Missing Dependencies Detected!
+   The following packages are required but not installed:
+     - ts-loader
+     - typescript
+
+   💡 Install them with:
+      npm install --save-dev ts-loader typescript
+
+   Then regenerate stats.json:
+      npx webpack --profile --json stats.json
+```
+
+**Auto-install option:**
+```bash
+# Packlyze will automatically install missing dependencies
+packlyze analyze stats.json --auto-install
+```
+
+After auto-install, you'll still need to regenerate stats.json:
+```bash
+npx webpack --profile --json stats.json
+packlyze analyze stats.json
+```
 
 - **"Module not found: Can't resolve './src'":**  
   This means your webpack entry point is pointing to a directory instead of a file.  
@@ -206,7 +324,8 @@ packlyze analyze <statsFile> [options]
 
 - `-o, --output <path>`: Path to the HTML report (default: `./bundle-report.html`).
 - `-j, --json`: Output raw JSON analysis to stdout instead of human-readable text/HTML.
-- `-v, --verbose`: Reserved for future verbose logging.
+- `-v, --verbose`: Verbose output showing detailed progress.
+- `--auto-install`: Automatically install missing dependencies when detected (requires user confirmation).
 
 ### Focus & filter options
 
