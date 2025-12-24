@@ -7,7 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { table } from 'table';
 import readline from 'readline';
-import { exec } from 'child_process';
+import { exec, execSync } from 'child_process';
 
 import { Packlyze } from './analyzer/packlyze';
 import { generateHTMLReport } from './visualization/reports';
@@ -91,11 +91,90 @@ program
       logVerbose('Validating stats file...');
       
       if (!fs.existsSync(resolvedStatsFile)) {
-        throw new Error(
-          `File not found: ${statsFile}${resolvedStatsFile !== statsFile ? ` (resolved to: ${resolvedStatsFile})` : ''}\n` +
-          `💡 Tip: Generate stats file with: webpack --profile --json ${statsFile}\n` +
-          `   Or for other bundlers, check the Packlyze documentation.`
-        );
+        // Stats file doesn't exist - try to generate it automatically
+        spinner.text = 'Stats file not found. Generating stats.json...';
+        console.log(chalk.yellow(`\n📦 Stats file not found: ${statsFile}`));
+        console.log(chalk.cyan('🔧 Attempting to generate stats.json automatically...\n'));
+        
+        try {
+          // Check if webpack is available
+          const webpackCommand = `npx webpack --profile --json ${statsFile}`;
+          const statsDir = path.dirname(resolvedStatsFile);
+          const statsFileName = path.basename(resolvedStatsFile);
+          
+          // Change to the directory where stats.json should be created
+          const originalCwd = process.cwd();
+          const targetDir = statsDir !== '.' ? statsDir : originalCwd;
+          
+          try {
+            spinner.text = `Running: ${webpackCommand}`;
+            console.log(chalk.gray(`   Running: ${webpackCommand}\n`));
+            
+            // Run webpack command
+            execSync(webpackCommand, {
+              cwd: targetDir,
+              stdio: 'inherit',
+              encoding: 'utf-8'
+            });
+            
+            // Check if stats file was created
+            if (fs.existsSync(resolvedStatsFile)) {
+              spinner.succeed(`✅ Successfully generated ${statsFileName}`);
+              console.log(chalk.green(`\n✅ Stats file generated: ${resolvedStatsFile}\n`));
+            } else {
+              // Check if it was created in current directory instead
+              const altPath = path.resolve(originalCwd, statsFileName);
+              if (fs.existsSync(altPath)) {
+                // Move it to the expected location
+                fs.copyFileSync(altPath, resolvedStatsFile);
+                spinner.succeed(`✅ Successfully generated ${statsFileName}`);
+                console.log(chalk.green(`\n✅ Stats file generated: ${resolvedStatsFile}\n`));
+              } else {
+                throw new Error('Webpack completed but stats file was not created');
+              }
+            }
+          } catch (webpackError: unknown) {
+            // Webpack command failed
+            const errorMessage = webpackError instanceof Error ? webpackError.message : String(webpackError);
+            
+            if (errorMessage.includes('webpack') && errorMessage.includes('not found')) {
+              throw new Error(
+                `Webpack is not installed or not available.\n` +
+                `💡 Install webpack:\n` +
+                `   npm install --save-dev webpack webpack-cli\n` +
+                `\n   Then run:\n` +
+                `   npx webpack --profile --json ${statsFile}\n` +
+                `   packlyze analyze ${statsFile}`
+              );
+            } else if (errorMessage.includes('webpack.config')) {
+              throw new Error(
+                `Webpack configuration not found.\n` +
+                `💡 Packlyze can help you create a webpack config!\n` +
+                `   Run packlyze analyze ${statsFile} again after Packlyze creates the config.\n` +
+                `\n   Or create webpack.config.js manually and run:\n` +
+                `   npx webpack --profile --json ${statsFile}`
+              );
+            } else {
+              throw new Error(
+                `Failed to generate stats file: ${errorMessage}\n` +
+                `💡 Please fix the webpack build errors first, then run:\n` +
+                `   npx webpack --profile --json ${statsFile}\n` +
+                `   packlyze analyze ${statsFile}`
+              );
+            }
+          }
+        } catch (generateError: unknown) {
+          // Auto-generation failed
+          spinner.fail('Failed to generate stats file');
+          const errorMessage = generateError instanceof Error ? generateError.message : String(generateError);
+          throw new Error(
+            `File not found: ${statsFile}${resolvedStatsFile !== statsFile ? ` (resolved to: ${resolvedStatsFile})` : ''}\n` +
+            `\n${errorMessage}\n` +
+            `💡 Tip: Generate stats file manually with:\n` +
+            `   npx webpack --profile --json ${statsFile}\n` +
+            `   Or for other bundlers, check the Packlyze documentation.`
+          );
+        }
       }
       
       // Check if it's actually a file

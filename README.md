@@ -42,22 +42,20 @@ npm install -g packlyze
 npx packlyze --help
 ```
 
-**2. Generate a stats file from your bundler (e.g., webpack):**
-
-> ⚠️ **Important:**  
-> You must generate a valid JSON stats file before running Packlyze.  
-> For webpack, use the following command in your project folder:
-
-```bash
-npx webpack --profile --json stats.json
-```
-- This will create a readable `stats.json` file in your project directory.
-
-**3. Run Packlyze analysis (CLI):**
+**2. Run Packlyze analysis (CLI):**
 ```bash
 packlyze analyze stats.json
 # or (if using npx)
 npx packlyze analyze stats.json
+```
+
+> ✨ **New!** Packlyze automatically generates `stats.json` if it doesn't exist!  
+> If `stats.json` is missing, Packlyze will run `npx webpack --profile --json stats.json` for you automatically, then proceed with the analysis.
+
+**3. (Optional) Generate stats manually:**
+```bash
+# If you prefer to generate stats.json yourself:
+npx webpack --profile --json stats.json
 ```
 
 **4. (Optional) Output an HTML report:**
@@ -78,18 +76,22 @@ npm install -g packlyze
 npx packlyze --help
 ```
 
-### **Step 2: Generate Stats File**
+### **Step 2: Analyze with Packlyze (One Command!)**
 ```bash
-# Make sure webpack is installed
-npm install --save-dev webpack webpack-cli
-
-# Generate stats.json
-npx webpack --profile --json stats.json
+# Packlyze automatically generates stats.json if it doesn't exist!
+packlyze analyze stats.json
 ```
 
-### **Step 3: Analyze with Packlyze**
+> ✨ **Automatic Stats Generation:**  
+> If `stats.json` doesn't exist, Packlyze will automatically run `npx webpack --profile --json stats.json` for you, then proceed with the analysis. No manual steps needed!
+
+### **Step 3: (Optional) Generate Stats Manually**
 ```bash
-# Basic analysis
+# If you prefer to generate stats.json yourself:
+npm install --save-dev webpack webpack-cli
+npx webpack --profile --json stats.json
+
+# Then analyze
 packlyze analyze stats.json
 
 # With auto-install for missing dependencies
@@ -109,11 +111,8 @@ packlyze analyze stats.json --json
 # Packlyze will show you the exact command, or use auto-install:
 packlyze analyze stats.json --auto-install
 
-# Then regenerate stats.json
-npx webpack --profile --json stats.json
-
-# Analyze again
-packlyze analyze stats.json
+# Packlyze will automatically regenerate stats.json and analyze again
+# (No need to run webpack manually!)
 ```
 
 **If you see path alias errors:**
@@ -121,11 +120,8 @@ packlyze analyze stats.json
 # Packlyze will automatically regenerate your webpack config with path aliases
 packlyze analyze stats.json
 
-# Then regenerate stats.json
-npx webpack --profile --json stats.json
-
-# Analyze again
-packlyze analyze stats.json
+# Packlyze will automatically regenerate stats.json and analyze again
+# (No need to run webpack manually - Packlyze does it for you!)
 ```
 
 **If you see entry point errors:**
@@ -148,8 +144,11 @@ packlyze analyze stats.json
 ## 🐛 Common Issues & Solutions
 
 ### **"Stats file not found"**
-Make sure `stats.json` exists in your folder.  
-Generate it using your bundler (see above).
+✨ **Packlyze automatically generates `stats.json` for you!**  
+If auto-generation fails, you can generate it manually:
+```bash
+npx webpack --profile --json stats.json
+```
 
 ### **"Invalid JSON in stats file"**
 Your stats file may be corrupted or not plain JSON.  

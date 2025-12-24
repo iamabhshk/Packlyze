@@ -578,6 +578,136 @@ export class Packlyze {
   }
 
   /**
+   * Scan source files for alias usage patterns
+   * Example: Finds '@/hooks/useAuth' in source files -> detects '@' alias is needed
+   */
+  private scanSourceFilesForAliases(): Record<string, string> {
+    const aliases: Map<string, string> = new Map();
+    const projectRoot = this.baseDir;
+    
+    // Common alias patterns to look for
+    const aliasPatterns = [
+      /['"]@\/([^'"]+)['"]/g,  // '@/hooks/useAuth'
+      /['"]@\\([^'"]+)['"]/g,   // '@\hooks\useAuth' (Windows)
+      /['"]~\/([^'"]+)['"]/g,   // '~/components/Button'
+      /from\s+['"]@\/([^'"]+)['"]/g,  // from '@/hooks/useAuth'
+      /import\s+.*from\s+['"]@\/([^'"]+)['"]/g,  // import ... from '@/hooks/useAuth'
+      /require\(['"]@\/([^'"]+)['"]\)/g,  // require('@/hooks/useAuth')
+    ];
+    
+    // Scan common source directories
+    const sourceDirs = [
+      path.join(projectRoot, 'src'),
+      path.join(path.dirname(projectRoot), 'src'),
+      projectRoot,
+    ];
+    
+    const scannedFiles = new Set<string>();
+    const maxFilesToScan = 100; // Limit to avoid performance issues
+    let filesScanned = 0;
+    
+    const scanDirectory = (dir: string, depth: number = 0): void => {
+      if (depth > 5 || filesScanned >= maxFilesToScan) return; // Limit depth and file count
+      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return;
+      
+      try {
+        const entries = fs.readdirSync(dir);
+        
+        for (const entry of entries) {
+          if (filesScanned >= maxFilesToScan) break;
+          
+          // Skip node_modules, dist, build, etc.
+          if (entry === 'node_modules' || entry === 'dist' || entry === 'build' || 
+              entry === '.git' || entry.startsWith('.')) {
+            continue;
+          }
+          
+          const fullPath = path.join(dir, entry);
+          
+          try {
+            const stats = fs.statSync(fullPath);
+            
+            if (stats.isDirectory()) {
+              scanDirectory(fullPath, depth + 1);
+            } else if (stats.isFile()) {
+              // Only scan JS/TS files
+              if (/\.(ts|tsx|js|jsx)$/.test(entry)) {
+                if (scannedFiles.has(fullPath)) continue;
+                scannedFiles.add(fullPath);
+                filesScanned++;
+                
+                try {
+                  const content = fs.readFileSync(fullPath, 'utf-8');
+                  
+                  // Check for alias patterns
+                  for (const pattern of aliasPatterns) {
+                    let match;
+                    while ((match = pattern.exec(content)) !== null && filesScanned < maxFilesToScan) {
+                      const aliasPath = match[1] || match[0];
+                      
+                      // Extract alias prefix
+                      if (match[0].includes('@/') || match[0].includes('@\\')) {
+                        const alias = '@';
+                        if (!aliases.has(alias)) {
+                          // Try to infer the mapping
+                          const inferredPath = this.inferAliasMapping(alias, `@/${aliasPath}`);
+                          if (inferredPath) {
+                            const absolutePath = path.isAbsolute(inferredPath)
+                              ? inferredPath
+                              : path.resolve(projectRoot, inferredPath);
+                            aliases.set(alias, absolutePath);
+                            this.log(`Detected alias usage: ${alias} -> ${inferredPath} (from source file: ${entry})`);
+                          }
+                        }
+                      } else if (match[0].includes('~/')) {
+                        const alias = '~';
+                        if (!aliases.has(alias)) {
+                          const inferredPath = this.inferAliasMapping(alias, `~/${aliasPath}`);
+                          if (inferredPath) {
+                            const absolutePath = path.isAbsolute(inferredPath)
+                              ? inferredPath
+                              : path.resolve(projectRoot, inferredPath);
+                            aliases.set(alias, absolutePath);
+                            this.log(`Detected alias usage: ${alias} -> ${inferredPath} (from source file: ${entry})`);
+                          }
+                        }
+                      }
+                    }
+                  }
+                } catch (error) {
+                  // Skip files that can't be read
+                  continue;
+                }
+              }
+            }
+          } catch (error) {
+            // Skip entries that can't be accessed
+            continue;
+          }
+        }
+      } catch (error) {
+        // Skip directories that can't be read
+        return;
+      }
+    };
+    
+    // Scan all source directories
+    for (const sourceDir of sourceDirs) {
+      if (fs.existsSync(sourceDir)) {
+        scanDirectory(sourceDir);
+      }
+    }
+    
+    // Convert Map to Record
+    const result: Record<string, string> = {};
+    for (const [key, value] of aliases.entries()) {
+      result[key] = value;
+    }
+    
+    return result;
+  }
+
+  /**
    * Extract TypeScript path aliases from tsconfig.json
    * Note: Does not handle "extends" - only reads the direct tsconfig.json file
    */
@@ -793,7 +923,18 @@ export class Packlyze {
     const isReact = framework === 'react';
     
     // Get TypeScript path aliases if available
-    const pathAliases = hasTypeScript ? this.getTypeScriptPathAliases() : {};
+    let pathAliases = hasTypeScript ? this.getTypeScriptPathAliases() : {};
+    
+    // If no aliases found in tsconfig.json, scan source files for alias usage
+    if (Object.keys(pathAliases).length === 0) {
+      this.log('No path aliases found in tsconfig.json, scanning source files for alias usage...');
+      const detectedAliases = this.scanSourceFilesForAliases();
+      if (Object.keys(detectedAliases).length > 0) {
+        this.log(`Detected ${Object.keys(detectedAliases).length} alias(es) from source files: ${Object.keys(detectedAliases).join(', ')}`);
+        pathAliases = { ...pathAliases, ...detectedAliases };
+      }
+    }
+    
     const hasAliases = Object.keys(pathAliases).length > 0;
     
     // Generate alias configuration string
