@@ -349,6 +349,235 @@ export class Packlyze {
   }
 
   /**
+   * Detect missing file extensions in resolve.extensions
+   * Example: Error resolving './App' when App.tsx exists but .tsx not in extensions
+   */
+  private detectMissingExtensions(errors: Array<{ message?: string; details?: string }>): Array<string> {
+    const missingExtensions: Set<string> = new Set();
+    
+    for (const error of errors) {
+      const message = (error.message || '') + ' ' + (error.details || '');
+      
+      // Pattern: Can't resolve './App' or './Component'
+      // Check if file exists with common extensions
+      const resolveError = message.match(/Can't resolve ['"]([^'"]+)['"]/);
+      if (resolveError) {
+        const importPath = resolveError[1];
+        // Skip if it's a package (starts with letter, no ./ or ../)
+        if (importPath.startsWith('./') || importPath.startsWith('../')) {
+          const projectRoot = this.baseDir;
+          const possibleExtensions = ['.tsx', '.ts', '.jsx', '.js', '.json', '.css', '.scss', '.svg', '.png'];
+          
+          for (const ext of possibleExtensions) {
+            const possibleFile = path.resolve(projectRoot, importPath + ext);
+            if (fs.existsSync(possibleFile)) {
+              // File exists with this extension, but webpack couldn't resolve it
+              // This suggests the extension is missing from resolve.extensions
+              missingExtensions.add(ext);
+            }
+          }
+        }
+      }
+    }
+    
+    return Array.from(missingExtensions);
+  }
+
+  /**
+   * Detect missing CSS/image loaders
+   */
+  private detectMissingAssetLoaders(errors: Array<{ message?: string; details?: string }>): { css: boolean; images: boolean } {
+    let css = false;
+    let images = false;
+    
+    for (const error of errors) {
+      const message = (error.message || '') + ' ' + (error.details || '');
+      
+      // CSS loader errors
+      if (message.includes('.css') && 
+          (message.includes("You may need an appropriate loader") || 
+           message.includes("Can't resolve") && message.match(/\.css['"]/))) {
+        css = true;
+      }
+      
+      // Image loader errors
+      if ((message.includes('.svg') || message.includes('.png') || message.includes('.jpg') || message.includes('.gif')) &&
+          (message.includes("You may need an appropriate loader") || 
+           message.includes("Can't resolve") && message.match(/\.(svg|png|jpg|jpeg|gif)['"]/))) {
+        images = true;
+      }
+    }
+    
+    return { css, images };
+  }
+
+  /**
+   * Detect baseUrl usage without proper webpack configuration
+   */
+  private detectBaseUrlIssues(errors: Array<{ message?: string; details?: string }>): boolean {
+    for (const error of errors) {
+      const message = (error.message || '') + ' ' + (error.details || '');
+      
+      // Pattern: Can't resolve 'src/utils' or 'app/components' (absolute imports without ./ or ../)
+      // This suggests baseUrl is set in tsconfig but not configured in webpack
+      const absoluteImportError = message.match(/Can't resolve ['"]([^./][^'"]+)['"]/);
+      if (absoluteImportError) {
+        const importPath = absoluteImportError[1];
+        // Check if it's not a node_modules package (doesn't start with @ or common package names)
+        if (!importPath.startsWith('@') && 
+            !importPath.match(/^(react|vue|angular|@babel|@types)/)) {
+          // Check if this path exists in the project
+          const projectRoot = this.baseDir;
+          const possiblePath = path.join(projectRoot, importPath);
+          if (fs.existsSync(possiblePath) || fs.existsSync(possiblePath + '.ts') || fs.existsSync(possiblePath + '.tsx')) {
+            return true;
+          }
+        }
+      }
+    }
+    
+    return false;
+  }
+
+  /**
+   * Detect case-sensitivity issues
+   */
+  private detectCaseSensitivityIssues(errors: Array<{ message?: string; details?: string }>): Array<{ expected: string; actual: string }> {
+    const issues: Array<{ expected: string; actual: string }> = [];
+    
+    for (const error of errors) {
+      const message = (error.message || '') + ' ' + (error.details || '');
+      
+      // Pattern: Can't resolve './components/Button' but './Components/button.tsx' exists
+      const resolveError = message.match(/Can't resolve ['"]([^'"]+)['"]/);
+      if (resolveError) {
+        const importPath = resolveError[1];
+        if (importPath.startsWith('./') || importPath.startsWith('../')) {
+          const projectRoot = this.baseDir;
+          const fullPath = path.resolve(projectRoot, importPath);
+          const dir = path.dirname(fullPath);
+          const basename = path.basename(fullPath);
+          
+          if (fs.existsSync(dir)) {
+            // Check for case-insensitive matches
+            const files = fs.readdirSync(dir);
+            const lowerBasename = basename.toLowerCase();
+            
+            for (const file of files) {
+              if (file.toLowerCase() === lowerBasename && file !== basename) {
+                issues.push({ expected: importPath, actual: path.join(path.dirname(importPath), file) });
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    return issues;
+  }
+
+  /**
+   * Extract alias patterns from error messages
+   * Example: "Can't resolve '@/hooks/useAuth'" -> { alias: '@', path: '@/hooks/useAuth' }
+   */
+  private extractAliasFromErrors(errors: Array<{ message?: string; details?: string }>): Array<{ alias: string; examplePath: string }> {
+    const aliases: Map<string, string> = new Map();
+    
+    for (const error of errors) {
+      const message = (error.message || '') + ' ' + (error.details || '');
+      
+      // Match patterns like '@/hooks/useAuth', '@\\hooks\\useAuth', or "'@/hooks/useAuth'"
+      const aliasPatterns = [
+        /['"`]?(@[^/\\'"`\s]+)[/\\]/g,  // @/something or @\something
+        /Can't resolve ['"`]?(@[^/\\'"`\s]+)[/\\]/g,
+        /Cannot resolve ['"`]?(@[^/\\'"`\s]+)[/\\]/g,
+      ];
+      
+      for (const pattern of aliasPatterns) {
+        let match;
+        while ((match = pattern.exec(message)) !== null) {
+          const alias = match[1];
+          if (alias && !aliases.has(alias)) {
+            // Extract the example path
+            const escapedAlias = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const fullPathMatch = message.match(new RegExp(`['"]?${escapedAlias}[/\\\\][^'"\\s]+`));
+            aliases.set(alias, fullPathMatch ? fullPathMatch[0].replace(/['"`]/g, '') : `${alias}/...`);
+          }
+        }
+      }
+    }
+    
+    return Array.from(aliases.entries()).map(([alias, examplePath]) => ({ alias, examplePath }));
+  }
+
+  /**
+   * Infer alias mapping by analyzing project structure
+   * Example: '@' -> 'src' (most common convention)
+   */
+  private inferAliasMapping(alias: string, examplePath: string): string | null {
+    // Common alias mappings
+    const commonMappings: Record<string, string[]> = {
+      '@': ['src', 'source', 'app', 'lib'],
+      '~': ['src', 'source'],
+      '@app': ['src/app', 'app'],
+      '@components': ['src/components', 'components'],
+      '@utils': ['src/utils', 'utils'],
+      '@lib': ['src/lib', 'lib'],
+    };
+    
+    // Check if we have a known mapping
+    if (commonMappings[alias]) {
+      const projectRoot = this.baseDir;
+      for (const possiblePath of commonMappings[alias]) {
+        const fullPath = path.join(projectRoot, possiblePath);
+        if (fs.existsSync(fullPath) && fs.statSync(fullPath).isDirectory()) {
+          return possiblePath;
+        }
+      }
+    }
+    
+    // Try to infer from the example path
+    // If error is '@/hooks/useAuth', try to find where 'hooks' directory exists
+    const pathParts = examplePath.split(/[/\\]/);
+    if (pathParts.length >= 2) {
+      const firstPart = pathParts[1]; // e.g., 'hooks' from '@/hooks/useAuth'
+      const projectRoot = this.baseDir;
+      
+      // Check common locations
+      const possibleLocations = [
+        path.join(projectRoot, 'src', firstPart),
+        path.join(projectRoot, firstPart),
+        path.join(path.dirname(projectRoot), 'src', firstPart),
+      ];
+      
+      for (const location of possibleLocations) {
+        if (fs.existsSync(location) && fs.statSync(location).isDirectory()) {
+          // Found the directory, infer the base path
+          const relativePath = path.relative(projectRoot, path.dirname(location));
+          return relativePath || 'src'; // Default to 'src' if at root
+        }
+      }
+      
+      // If we found 'hooks' in 'src/hooks', infer '@' -> 'src'
+      const srcHooks = path.join(projectRoot, 'src', firstPart);
+      if (fs.existsSync(srcHooks)) {
+        return 'src';
+      }
+    }
+    
+    // Default inference: '@' usually maps to 'src'
+    if (alias === '@') {
+      const srcPath = path.join(this.baseDir, 'src');
+      if (fs.existsSync(srcPath) && fs.statSync(srcPath).isDirectory()) {
+        return 'src';
+      }
+    }
+    
+    return null;
+  }
+
+  /**
    * Extract TypeScript path aliases from tsconfig.json
    * Note: Does not handle "extends" - only reads the direct tsconfig.json file
    */
@@ -626,7 +855,8 @@ module.exports = {
   },
   
   resolve: {
-    extensions: ['.js', '.jsx'${useTypeScript ? ", '.ts', '.tsx'" : ''}]${aliasConfig},
+    extensions: ['.js', '.jsx'${useTypeScript ? ", '.ts', '.tsx'" : ''}, '.json']${aliasConfig},
+    modules: ['node_modules', path.resolve(__dirname, 'src')],
   },
   
   module: {
@@ -674,6 +904,10 @@ module.exports = {
       config += `      {
         test: /\\.(png|jpg|jpeg|gif|svg)$/,
         type: 'asset/resource'
+      },
+      {
+        test: /\\.css$/,
+        use: ['style-loader', 'css-loader']
       }
     ]
   },
@@ -703,7 +937,8 @@ module.exports = {
   },
   
   resolve: {
-    extensions: ['.js', '.jsx'${useTypeScript ? ", '.ts', '.tsx'" : ''}]${aliasConfig},
+    extensions: ['.js', '.jsx'${useTypeScript ? ", '.ts', '.tsx'" : ''}, '.json']${aliasConfig},
+    modules: ['node_modules', path.resolve(__dirname, 'src')],
   },
   
   module: {
@@ -751,6 +986,10 @@ module.exports = {
       config += `      {
         test: /\\.(png|jpg|jpeg|gif|svg)$/,
         type: 'asset/resource'
+      },
+      {
+        test: /\\.css$/,
+        use: ['style-loader', 'css-loader']
       }
     ]
   },
@@ -1250,30 +1489,172 @@ module.exports = {
               `      4. Run packlyze analyze stats.json again\n`;
           }
         } else {
-          // Get the search paths for better error message
-          const searchPaths = this.findProjectRoot();
-          const searchedLocations = searchPaths.map(p => path.join(p, 'tsconfig.json')).join('\n     - ');
+          // No aliases in tsconfig.json, but we have path alias errors
+          // Try to infer aliases from error messages and auto-fix
+          const inferredAliases = this.extractAliasFromErrors(pathAliasErrors);
           
-          pathAliasSuggestion = `\n\n⚠️  Path alias errors detected, but no path aliases found in tsconfig.json.\n\n` +
-            `   Searched for tsconfig.json in:\n` +
-            `     - ${searchedLocations}\n\n` +
-            `   Make sure:\n` +
-            `     1. tsconfig.json exists in one of the locations above\n` +
-            `     2. tsconfig.json has compilerOptions.paths configured:\n` +
-            `        {\n` +
-            `          "compilerOptions": {\n` +
-            `            "baseUrl": ".",\n` +
-            `            "moduleResolution": "node",\n` +
-            `            "paths": {\n` +
-            `              "@/*": ["src/*"]\n` +
-            `            }\n` +
-            `          }\n` +
-            `        }\n` +
-            `     3. If using "extends", path aliases must be in the main tsconfig.json (not just in extended config)\n` +
-            `     4. If using moduleResolution: "bundler", change it to "node" or "node16" for webpack compatibility\n` +
-            `     5. Run with --verbose to see detailed search logs\n\n` +
-            `   💡 Alternative: Install tsconfig-paths-webpack-plugin for automatic path alias resolution:\n` +
-            `      npm install --save-dev tsconfig-paths-webpack-plugin\n`;
+          if (inferredAliases.length > 0) {
+            this.log(`Detected ${inferredAliases.length} alias pattern(s) from error messages: ${inferredAliases.map(a => a.alias).join(', ')}`);
+            
+            // Try to infer mappings and add them to webpack config
+            const aliasMappings: Record<string, string> = {};
+            
+            for (const { alias, examplePath } of inferredAliases) {
+              const inferredPath = this.inferAliasMapping(alias, examplePath);
+              if (inferredPath) {
+                const projectRoot = this.baseDir;
+                const absolutePath = path.isAbsolute(inferredPath) 
+                  ? inferredPath 
+                  : path.resolve(projectRoot, inferredPath);
+                aliasMappings[alias] = absolutePath;
+                this.log(`Inferred mapping: ${alias} -> ${inferredPath}`);
+              } else {
+                this.log(`Could not infer mapping for alias: ${alias}`);
+              }
+            }
+            
+            // If we found mappings, try to add them to webpack config
+            if (Object.keys(aliasMappings).length > 0 && configCheck.exists) {
+              try {
+                // Read existing config
+                const configPath = configCheck.path!;
+                let configContent = fs.readFileSync(configPath, 'utf-8');
+                
+                // Check if alias section exists
+                const hasAliasSection = configContent.includes('resolve:') && 
+                                       configContent.includes('alias:');
+                
+                if (!hasAliasSection) {
+                  // Add alias section to resolve
+                  const aliasEntries = Object.entries(aliasMappings)
+                    .map(([key, absolutePath]) => {
+                      const relativePath = path.relative(this.baseDir, absolutePath);
+                      const normalizedPath = relativePath.replace(/\\/g, '/');
+                      const escapedKey = key.replace(/'/g, "\\'");
+                      return `      '${escapedKey}': path.resolve(__dirname, '${normalizedPath}')`;
+                    })
+                    .join(',\n');
+                  
+                  // Try to insert alias into resolve section
+                  if (configContent.includes('resolve:')) {
+                    // Find resolve section and add alias
+                    const resolveMatch = configContent.match(/resolve:\s*\{[^}]*\}/s);
+                    if (resolveMatch) {
+                      const resolveSection = resolveMatch[0];
+                      if (!resolveSection.includes('alias:')) {
+                        // Add alias before closing brace
+                        const newResolveSection = resolveSection.replace(/\}\s*$/, `,\n    alias: {\n${aliasEntries}\n    }\n  }`);
+                        configContent = configContent.replace(resolveSection, newResolveSection);
+                        
+                        fs.writeFileSync(configPath, configContent, 'utf-8');
+                        configRegenerated = true;
+                        
+                        pathAliasSuggestion = `\n\n✅ Auto-detected and added path aliases to ${configCheck.correctFileName}!\n` +
+                          `   Detected aliases from error messages:\n` +
+                          Object.entries(aliasMappings).map(([key, mappedPath]) => {
+                            const relativePath = path.relative(this.baseDir, mappedPath);
+                            return `     - ${key} -> ${relativePath}`;
+                          }).join('\n') +
+                          `\n\n   💡 Next steps:\n` +
+                          `      1. Regenerate stats.json: npx webpack --profile --json stats.json\n` +
+                          `      2. Run packlyze analyze stats.json again\n`;
+                      }
+                    }
+                  }
+                }
+              } catch (error) {
+                this.log(`Could not auto-add aliases to config: ${error}`);
+              }
+            }
+            
+            // If we couldn't auto-fix, provide helpful suggestions
+            if (!configRegenerated) {
+              const searchPaths = this.findProjectRoot();
+              const searchedLocations = searchPaths.map(p => path.join(p, 'tsconfig.json')).join('\n     - ');
+              
+              const aliasExamples = inferredAliases.map(a => `     - ${a.alias} (from: ${a.examplePath})`).join('\n');
+              const suggestedMappings = Object.entries(aliasMappings).length > 0
+                ? `\n   Inferred mappings:\n` +
+                  Object.entries(aliasMappings).map(([key, mappedPath]) => {
+                    const relativePath = path.relative(this.baseDir, mappedPath);
+                    return `     - ${key} -> ${relativePath}`;
+                  }).join('\n')
+                : '';
+              
+              pathAliasSuggestion = `\n\n⚠️  Path alias errors detected, but no path aliases found in tsconfig.json.\n\n` +
+                `   Detected alias patterns from errors:\n${aliasExamples}\n` +
+                (suggestedMappings || '') +
+                `\n   Searched for tsconfig.json in:\n` +
+                `     - ${searchedLocations}\n\n` +
+                (Object.keys(aliasMappings).length > 0 ? 
+                  `   💡 Quick fix - Add to your ${configCheck.correctFileName}:\n` +
+                  `      resolve: {\n` +
+                  `        alias: {\n` +
+                  Object.entries(aliasMappings).map(([key, mappedPath]) => {
+                    const relativePath = path.relative(this.baseDir, mappedPath);
+                    const normalizedPath = relativePath.replace(/\\/g, '/');
+                    return `          '${key}': path.resolve(__dirname, '${normalizedPath}')`;
+                  }).join(',\n') +
+                  `\n        }\n` +
+                  `      }\n\n` +
+                  `   Or add to tsconfig.json:\n` +
+                  `     {\n` +
+                  `       "compilerOptions": {\n` +
+                  `         "baseUrl": ".",\n` +
+                  `         "moduleResolution": "node",\n` +
+                  `         "paths": {\n` +
+                  Object.entries(aliasMappings).map(([key, mappedPath]) => {
+                    const relativePath = path.relative(this.baseDir, mappedPath);
+                    const normalizedPath = relativePath.replace(/\\/g, '/');
+                    return `           "${key}/*": ["${normalizedPath}/*"]`;
+                  }).join(',\n') +
+                  `\n         }\n` +
+                  `       }\n` +
+                  `     }\n` :
+                  `   Make sure:\n` +
+                  `     1. tsconfig.json exists in one of the locations above\n` +
+                  `     2. tsconfig.json has compilerOptions.paths configured:\n` +
+                  `        {\n` +
+                  `          "compilerOptions": {\n` +
+                  `            "baseUrl": ".",\n` +
+                  `            "moduleResolution": "node",\n` +
+                  `            "paths": {\n` +
+                  `              "@/*": ["src/*"]\n` +
+                  `            }\n` +
+                  `          }\n` +
+                  `        }\n` +
+                  `     3. If using "extends", path aliases must be in the main tsconfig.json (not just in extended config)\n` +
+                  `     4. If using moduleResolution: "bundler", change it to "node" or "node16" for webpack compatibility\n` +
+                  `     5. Run with --verbose to see detailed search logs\n\n` +
+                  `   💡 Alternative: Install tsconfig-paths-webpack-plugin for automatic path alias resolution:\n` +
+                  `      npm install --save-dev tsconfig-paths-webpack-plugin\n`);
+            }
+          } else {
+            // Could not extract aliases from errors
+            const searchPaths = this.findProjectRoot();
+            const searchedLocations = searchPaths.map(p => path.join(p, 'tsconfig.json')).join('\n     - ');
+            
+            pathAliasSuggestion = `\n\n⚠️  Path alias errors detected, but no path aliases found in tsconfig.json.\n\n` +
+              `   Searched for tsconfig.json in:\n` +
+              `     - ${searchedLocations}\n\n` +
+              `   Make sure:\n` +
+              `     1. tsconfig.json exists in one of the locations above\n` +
+              `     2. tsconfig.json has compilerOptions.paths configured:\n` +
+              `        {\n` +
+              `          "compilerOptions": {\n` +
+              `            "baseUrl": ".",\n` +
+              `            "moduleResolution": "node",\n` +
+              `            "paths": {\n` +
+              `              "@/*": ["src/*"]\n` +
+              `            }\n` +
+              `          }\n` +
+              `        }\n` +
+              `     3. If using "extends", path aliases must be in the main tsconfig.json (not just in extended config)\n` +
+              `     4. If using moduleResolution: "bundler", change it to "node" or "node16" for webpack compatibility\n` +
+              `     5. Run with --verbose to see detailed search logs\n\n` +
+              `   💡 Alternative: Install tsconfig-paths-webpack-plugin for automatic path alias resolution:\n` +
+              `      npm install --save-dev tsconfig-paths-webpack-plugin\n`;
+          }
         }
       }
       
@@ -1301,8 +1682,157 @@ module.exports = {
         errorMessage += pathAliasSuggestion;
       }
       
+      // Detect and handle other common issues
+      let otherIssues = '';
+      
+      // 1. Missing extensions in resolve.extensions
+      const missingExtensions = this.detectMissingExtensions(errors);
+      if (missingExtensions.length > 0) {
+        const configCheck = this.checkWebpackConfig();
+        if (configCheck.exists && configCheck.path) {
+          try {
+            let configContent = fs.readFileSync(configCheck.path, 'utf-8');
+            
+            // Check if extensions are already in config
+            const hasExtensions = configContent.includes('extensions:');
+            if (hasExtensions) {
+              // Try to add missing extensions
+              const extensionsMatch = configContent.match(/extensions:\s*\[([^\]]+)\]/);
+              if (extensionsMatch) {
+                const existingExtensions = extensionsMatch[1];
+                const newExtensions = missingExtensions
+                  .filter(ext => !existingExtensions.includes(ext))
+                  .map(ext => `'${ext}'`)
+                  .join(', ');
+                
+                if (newExtensions) {
+                  const newExtensionsList = existingExtensions.trim() 
+                    ? `${existingExtensions}, ${newExtensions}`
+                    : newExtensions;
+                  configContent = configContent.replace(
+                    /extensions:\s*\[([^\]]+)\]/,
+                    `extensions: [${newExtensionsList}]`
+                  );
+                  fs.writeFileSync(configCheck.path, configContent, 'utf-8');
+                  
+                  otherIssues += `\n\n✅ Auto-added missing extensions to resolve.extensions: ${missingExtensions.join(', ')}\n`;
+                }
+              }
+            } else {
+              // Add extensions section
+              if (configContent.includes('resolve:')) {
+                const resolveMatch = configContent.match(/resolve:\s*\{[^}]*\}/s);
+                if (resolveMatch) {
+                  const extensionsList = missingExtensions.map(ext => `'${ext}'`).join(', ');
+                  const newResolveSection = resolveMatch[0].replace(
+                    /\}\s*$/,
+                    `,\n    extensions: ['.js', '.jsx', '.ts', '.tsx', ${extensionsList}]\n  }`
+                  );
+                  configContent = configContent.replace(resolveMatch[0], newResolveSection);
+                  fs.writeFileSync(configCheck.path, configContent, 'utf-8');
+                  
+                  otherIssues += `\n\n✅ Auto-added resolve.extensions: ${missingExtensions.join(', ')}\n`;
+                }
+              }
+            }
+          } catch (error) {
+            otherIssues += `\n\n⚠️  Missing file extensions in resolve.extensions: ${missingExtensions.join(', ')}\n` +
+              `   Add to your webpack config:\n` +
+              `   resolve: {\n` +
+              `     extensions: ['.js', '.jsx', '.ts', '.tsx', ${missingExtensions.map(e => `'${e}'`).join(', ')}]\n` +
+              `   }\n`;
+          }
+        } else {
+          otherIssues += `\n\n⚠️  Missing file extensions in resolve.extensions: ${missingExtensions.join(', ')}\n` +
+            `   Add these extensions to your webpack config's resolve.extensions array.\n`;
+        }
+      }
+      
+      // 2. Missing CSS/image loaders
+      const missingLoaders = this.detectMissingAssetLoaders(errors);
+      if (missingLoaders.css || missingLoaders.images) {
+        const missingPackages: string[] = [];
+        if (missingLoaders.css) {
+          missingPackages.push('css-loader', 'style-loader');
+        }
+        if (missingLoaders.images) {
+          // Webpack 5 uses asset/resource, no loader needed, but we should suggest it
+        }
+        
+        if (missingPackages.length > 0) {
+          const configCheck = this.checkWebpackConfig();
+          const dependencyCheck = this.checkPackagesInstalled(missingPackages);
+          
+          if (dependencyCheck && dependencyCheck.missing.length > 0) {
+            const installCommand = this.generateInstallCommand(dependencyCheck.missing);
+            otherIssues += `\n\n⚠️  Missing CSS/Asset loaders detected!\n` +
+              `   The following packages are required but not installed:\n` +
+              `   ${dependencyCheck.missing.map(p => `     - ${p}`).join('\n')}\n\n` +
+              `   💡 Install them with:\n` +
+              `      ${installCommand}\n\n` +
+              `   Then add to your webpack config:\n` +
+              (missingLoaders.css ? 
+                `   module: {\n` +
+                `     rules: [\n` +
+                `       { test: /\\.css$/, use: ['style-loader', 'css-loader'] }\n` +
+                `     ]\n` +
+                `   }\n` : '');
+          }
+        }
+      }
+      
+      // 3. baseUrl issues
+      const hasBaseUrlIssue = this.detectBaseUrlIssues(errors);
+      if (hasBaseUrlIssue) {
+        const configCheck = this.checkWebpackConfig();
+        const tsconfigAliases = this.getTypeScriptPathAliases();
+        const tsconfigPath = this.findProjectRoot().map(p => path.join(p, 'tsconfig.json')).find(p => fs.existsSync(p));
+        
+        if (tsconfigPath) {
+          try {
+            const tsconfigContent = fs.readFileSync(tsconfigPath, 'utf-8');
+            const cleanedContent = tsconfigContent.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
+            const tsconfig = JSON.parse(cleanedContent);
+            
+            if (tsconfig.compilerOptions?.baseUrl && !tsconfig.compilerOptions?.paths) {
+              otherIssues += `\n\n⚠️  baseUrl is set in tsconfig.json but paths are not configured.\n` +
+                `   TypeScript can resolve imports like 'src/utils', but webpack cannot.\n\n` +
+                `   💡 Solution 1: Add resolve.modules to webpack config:\n` +
+                `      resolve: {\n` +
+                `        modules: ['node_modules', '${tsconfig.compilerOptions.baseUrl}']\n` +
+                `      }\n\n` +
+                `   💡 Solution 2: Add paths to tsconfig.json:\n` +
+                `      "compilerOptions": {\n` +
+                `        "baseUrl": ".",\n` +
+                `        "paths": {\n` +
+                `          "src/*": ["src/*"],\n` +
+                `          "app/*": ["app/*"]\n` +
+                `        }\n` +
+                `      }\n`;
+            }
+          } catch (error) {
+            // Ignore parse errors
+          }
+        }
+      }
+      
+      // 4. Case-sensitivity issues
+      const caseIssues = this.detectCaseSensitivityIssues(errors);
+      if (caseIssues.length > 0) {
+        otherIssues += `\n\n⚠️  Case-sensitivity issues detected!\n` +
+          `   Your imports use different casing than the actual files:\n` +
+          caseIssues.map(issue => `     - Imported: ${issue.expected}\n       Actual: ${issue.actual}`).join('\n') +
+          `\n\n   💡 Fix: Update your imports to match the exact file casing.\n` +
+          `   This is especially important for Linux/CI environments where file systems are case-sensitive.\n`;
+      }
+      
+      // Add other issues to error message
+      if (otherIssues) {
+        errorMessage += otherIssues;
+      }
+      
       // Add default suggestion if no other suggestions
-      if (!suggestion && !pathAliasSuggestion && !dependencySuggestion) {
+      if (!suggestion && !pathAliasSuggestion && !dependencySuggestion && !otherIssues) {
         errorMessage += `\n💡 Fix the webpack build errors first, then regenerate stats.json:\n` +
           `   npx webpack --profile --json stats.json`;
       }
