@@ -1760,7 +1760,6 @@ module.exports = {
         }
         
         if (missingPackages.length > 0) {
-          const configCheck = this.checkWebpackConfig();
           const dependencyCheck = this.checkPackagesInstalled(missingPackages);
           
           if (dependencyCheck && dependencyCheck.missing.length > 0) {
@@ -1784,8 +1783,6 @@ module.exports = {
       // 3. baseUrl issues
       const hasBaseUrlIssue = this.detectBaseUrlIssues(errors);
       if (hasBaseUrlIssue) {
-        const configCheck = this.checkWebpackConfig();
-        const tsconfigAliases = this.getTypeScriptPathAliases();
         const tsconfigPath = this.findProjectRoot().map(p => path.join(p, 'tsconfig.json')).find(p => fs.existsSync(p));
         
         if (tsconfigPath) {
