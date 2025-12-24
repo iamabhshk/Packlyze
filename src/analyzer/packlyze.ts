@@ -82,14 +82,14 @@ export class Packlyze {
     }
 
     // Priority order for entry point detection
+    // main.* files are typically the actual entry points, so check them first
     const entryPointPatterns = [
-      // React (case-sensitive, most common)
+      // Main entry points (highest priority - these are typically the actual entry points)
+      'main.tsx', 'main.ts', 'main.jsx', 'main.js',
+      // React App files (common but not always the entry point)
       'App.tsx', 'App.jsx', 'app.tsx', 'app.jsx',
-      // React index files
-      'index.tsx', 'index.jsx',
-      // Generic entry points
-      'main.ts', 'main.js', 'main.tsx', 'main.jsx',
-      'index.ts', 'index.js',
+      // Index files (fallback entry points)
+      'index.tsx', 'index.ts', 'index.jsx', 'index.js',
       // Vue/Angular
       'app.ts', 'app.js',
     ];
@@ -384,6 +384,13 @@ export class Packlyze {
             continue;
           }
           
+          // Check for moduleResolution: "bundler" which doesn't work well with webpack
+          const moduleResolution = tsconfig.compilerOptions.moduleResolution;
+          if (moduleResolution === 'bundler') {
+            this.log(`Warning: moduleResolution: "bundler" is set in tsconfig.json. This works with Vite/esbuild but not webpack.`);
+            this.log(`Consider using "node" or "node16" for webpack compatibility.`);
+          }
+          
           const paths = tsconfig.compilerOptions.paths;
           if (paths && typeof paths === 'object') {
             this.log(`Found compilerOptions.paths in tsconfig.json`);
@@ -598,6 +605,10 @@ export class Packlyze {
         })
         .join(',\n');
       aliasConfig = `,\n    alias: {\n${aliasEntries}\n    }`;
+      
+      // Add note about tsconfig-paths-webpack-plugin as alternative
+      this.log(`Note: Using webpack resolve.alias for path aliases.`);
+      this.log(`Alternative: You can use tsconfig-paths-webpack-plugin for automatic sync with tsconfig.json`);
     }
     
     let config = '';
@@ -623,14 +634,24 @@ module.exports = {
 `;
       
       if (useTypeScript) {
+        // Configure ts-loader to work better with path aliases
+        // Note: transpileOnly: true speeds up builds but webpack still needs resolve.alias for path resolution
+        const tsLoaderOptions = hasAliases 
+          ? `{
+            transpileOnly: true,
+            // Path aliases are handled by webpack resolve.alias above
+            // TypeScript type checking happens separately (e.g., via tsc --noEmit)
+          }`
+          : `{
+            transpileOnly: true
+          }`;
+        
         config += `      {
         test: /\\.(ts|tsx)$/,
         exclude: /node_modules/,
         use: {
           loader: 'ts-loader',
-          options: {
-            transpileOnly: true
-          }
+          options: ${tsLoaderOptions}
         }
       },
 `;
@@ -690,14 +711,24 @@ module.exports = {
 `;
       
       if (useTypeScript) {
+        // Configure ts-loader to work better with path aliases
+        // Note: transpileOnly: true speeds up builds but webpack still needs resolve.alias for path resolution
+        const tsLoaderOptions = hasAliases 
+          ? `{
+            transpileOnly: true,
+            // Path aliases are handled by webpack resolve.alias above
+            // TypeScript type checking happens separately (e.g., via tsc --noEmit)
+          }`
+          : `{
+            transpileOnly: true
+          }`;
+        
         config += `      {
         test: /\\.(ts|tsx)$/,
         exclude: /node_modules/,
         use: {
           loader: 'ts-loader',
-          options: {
-            transpileOnly: true
-          }
+          options: ${tsLoaderOptions}
         }
       },
 `;
@@ -1232,13 +1263,17 @@ module.exports = {
             `        {\n` +
             `          "compilerOptions": {\n` +
             `            "baseUrl": ".",\n` +
+            `            "moduleResolution": "node",\n` +
             `            "paths": {\n` +
             `              "@/*": ["src/*"]\n` +
             `            }\n` +
             `          }\n` +
             `        }\n` +
             `     3. If using "extends", path aliases must be in the main tsconfig.json (not just in extended config)\n` +
-            `     4. Run with --verbose to see detailed search logs\n`;
+            `     4. If using moduleResolution: "bundler", change it to "node" or "node16" for webpack compatibility\n` +
+            `     5. Run with --verbose to see detailed search logs\n\n` +
+            `   💡 Alternative: Install tsconfig-paths-webpack-plugin for automatic path alias resolution:\n` +
+            `      npm install --save-dev tsconfig-paths-webpack-plugin\n`;
         }
       }
       

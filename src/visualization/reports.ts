@@ -26,31 +26,31 @@ function generateHTML(result: AnalysisResult, baseline?: AnalysisResult): string
     `)
     .join('');
 
-  const topModules = result.bundleStats.modules
+  const topModules = (result.bundleStats?.modules || [])
     .slice(0, 10)
     .map(m => `
       <tr>
-        <td>${escapeHtml(m.name.slice(-50))}</td>
-        <td>${(m.size / 1024).toFixed(2)} KB</td>
-        <td>${m.percentage.toFixed(2)}%</td>
+        <td>${escapeHtml((m.name || '').slice(-50))}</td>
+        <td>${((m.size || 0) / 1024).toFixed(2)} KB</td>
+        <td>${((m.percentage || 0)).toFixed(2)}%</td>
       </tr>
     `)
     .join('');
 
-  const duplicates = result.duplicates
+  const duplicates = (result.duplicates || [])
     .map(dup => `
       <tr>
-        <td>${dup.names.length}</td>
-        <td>${(dup.totalSize / 1024).toFixed(2)} KB</td>
-        <td>${(dup.savings / 1024).toFixed(2)} KB</td>
-        <td>${dup.names.slice(0, 3).map(name => escapeHtml(name)).join('<br/>')}${dup.names.length > 3 ? '…' : ''}</td>
+        <td>${(dup.names || []).length}</td>
+        <td>${((dup.totalSize || 0) / 1024).toFixed(2)} KB</td>
+        <td>${((dup.savings || 0) / 1024).toFixed(2)} KB</td>
+        <td>${(dup.names || []).slice(0, 3).map(name => escapeHtml(name || '')).join('<br/>')}${(dup.names || []).length > 3 ? '…' : ''}</td>
       </tr>
     `)
     .join('');
 
-  const treeshakingIssues = result.treeshakingIssues
+  const treeshakingIssues = (result.treeshakingIssues || [])
     .slice(0, 10)
-    .map(issue => `<li>${escapeHtml(issue)}</li>`)
+    .map(issue => `<li>${escapeHtml(issue || '')}</li>`)
     .join('');
 
   return `
@@ -522,7 +522,7 @@ function generateHTML(result: AnalysisResult, baseline?: AnalysisResult): string
       </div>
     </div>
 
-    ${result.recommendations.length > 0 ? `
+    ${result.recommendations && result.recommendations.length > 0 ? `
       <div class="section">
         <div class="section-inner">
           <h2>
@@ -555,7 +555,7 @@ function generateHTML(result: AnalysisResult, baseline?: AnalysisResult): string
       </div>
     </div>
 
-    ${result.packages.length > 0 ? `
+    ${result.packages && result.packages.length > 0 ? `
     <div class="section">
       <div class="section-inner">
         <h2>
@@ -724,51 +724,74 @@ function generateHTML(result: AnalysisResult, baseline?: AnalysisResult): string
         });
       });
 
-      // Make table headers sortable
-      document.querySelectorAll('table thead th:not(.search-row th)').forEach((th, index) => {
-        if (th.textContent.trim() === '') return;
+      // Make table headers sortable (exclude search row)
+      tables.forEach((table, tableIndex) => {
+        const thead = table.querySelector('thead');
+        if (!thead) return;
         
-        th.style.cursor = 'pointer';
-        th.style.userSelect = 'none';
-        th.title = 'Click to sort';
+        // Get all header rows (excluding search row)
+        const headerRows = Array.from(thead.querySelectorAll('tr')).filter(tr => !tr.classList.contains('search-row'));
+        if (headerRows.length === 0) return;
         
-        th.addEventListener('click', function() {
-          const table = th.closest('table');
-          const tbody = table.querySelector('tbody');
-          const rows = Array.from(tbody.querySelectorAll('tr'));
-          const isAscending = th.dataset.sort === 'asc';
+        // Get the first header row (actual column headers)
+        const firstHeaderRow = headerRows[0];
+        const headers = firstHeaderRow.querySelectorAll('th');
+        
+        headers.forEach((th, index) => {
+          // Skip if empty or inside search row
+          if (th.textContent.trim() === '' || th.closest('.search-row')) return;
           
-          // Reset all headers
-          table.querySelectorAll('th').forEach(h => {
-            h.dataset.sort = '';
-            h.textContent = h.textContent.replace(' ▲', '').replace(' ▼', '');
+          th.style.cursor = 'pointer';
+          th.style.userSelect = 'none';
+          th.title = 'Click to sort';
+          
+          th.addEventListener('click', function() {
+            const tbody = table.querySelector('tbody');
+            if (!tbody) return;
+            
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            if (rows.length === 0) return;
+            
+            const isAscending = th.dataset.sort === 'asc';
+            
+            // Reset all headers in this table
+            headers.forEach(h => {
+              h.dataset.sort = '';
+              h.textContent = h.textContent.replace(' ▲', '').replace(' ▼', '');
+            });
+            
+            // Sort rows
+            rows.sort((a, b) => {
+              const aCell = a.cells[index];
+              const bCell = b.cells[index];
+              
+              if (!aCell || !bCell) return 0;
+              
+              const aText = aCell.textContent.trim() || '';
+              const bText = bCell.textContent.trim() || '';
+              
+              // Try numeric comparison
+              const aNum = parseFloat(aText.replace(/[^0-9.-]/g, ''));
+              const bNum = parseFloat(bText.replace(/[^0-9.-]/g, ''));
+              
+              if (!isNaN(aNum) && !isNaN(bNum)) {
+                return isAscending ? bNum - aNum : aNum - bNum;
+              }
+              
+              // String comparison
+              return isAscending 
+                ? bText.localeCompare(aText)
+                : aText.localeCompare(bText);
+            });
+            
+            // Re-append sorted rows
+            rows.forEach(row => tbody.appendChild(row));
+            
+            // Update header
+            th.dataset.sort = isAscending ? 'desc' : 'asc';
+            const originalText = th.textContent.replace(' ▲', '').replace(' ▼', '').trim();
+            th.textContent = originalText + (isAscending ? ' ▼' : ' ▲');
           });
-          
-          // Sort rows
-          rows.sort((a, b) => {
-            const aText = a.cells[index]?.textContent.trim() || '';
-            const bText = b.cells[index]?.textContent.trim() || '';
-            
-            // Try numeric comparison
-            const aNum = parseFloat(aText);
-            const bNum = parseFloat(bText);
-            
-            if (!isNaN(aNum) && !isNaN(bNum)) {
-              return isAscending ? bNum - aNum : aNum - bNum;
-            }
-            
-            // String comparison
-            return isAscending 
-              ? bText.localeCompare(aText)
-              : aText.localeCompare(bText);
-          });
-          
-          // Re-append sorted rows
-          rows.forEach(row => tbody.appendChild(row));
-          
-          // Update header
-          th.dataset.sort = isAscending ? 'desc' : 'asc';
-          th.textContent = th.textContent + (isAscending ? ' ▼' : ' ▲');
         });
       });
 
@@ -777,14 +800,25 @@ function generateHTML(result: AnalysisResult, baseline?: AnalysisResult): string
         const section = h2.closest('.section');
         if (!section) return;
         
+        const inner = section.querySelector('.section-inner');
+        if (!inner) return;
+        
         h2.style.cursor = 'pointer';
+        h2.style.position = 'relative';
         h2.title = 'Click to expand/collapse';
         
+        // Add visual indicator
+        const indicator = document.createElement('span');
+        indicator.textContent = ' ▼';
+        indicator.style.fontSize = '12px';
+        indicator.style.marginLeft = '8px';
+        indicator.style.opacity = '0.6';
+        h2.appendChild(indicator);
+        
         h2.addEventListener('click', function() {
-          const inner = section.querySelector('.section-inner');
-          if (inner) {
-            inner.style.display = inner.style.display === 'none' ? '' : 'none';
-          }
+          const isHidden = inner.style.display === 'none';
+          inner.style.display = isHidden ? '' : 'none';
+          indicator.textContent = isHidden ? ' ▼' : ' ▶';
         });
       });
 

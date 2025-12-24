@@ -6,6 +6,8 @@ import ora from 'ora';
 import fs from 'fs';
 import path from 'path';
 import { table } from 'table';
+import readline from 'readline';
+import { exec } from 'child_process';
 
 import { Packlyze } from './analyzer/packlyze';
 import { generateHTMLReport } from './visualization/reports';
@@ -179,6 +181,9 @@ program
           } else {
             generateHTMLReport(result, outputPath, baselineResult);
             console.log(chalk.green(`✅ HTML report saved to ${outputPath}`));
+            
+            // Prompt user to open the report
+            await promptToOpenReport(outputPath);
           }
         }
 
@@ -569,4 +574,67 @@ function formatDeltaCount(baseline?: number, current?: number): string {
   const sign = diff > 0 ? '+' : '-';
   const color = diff > 0 ? chalk.red : chalk.green;
   return ` (${color(`${sign}${Math.abs(diff)} vs baseline`)})`;
+}
+
+/**
+ * Prompt user to press Enter and open the HTML report in the default browser
+ */
+async function promptToOpenReport(filePath: string): Promise<void> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+
+    const absolutePath = path.resolve(filePath);
+    console.log(chalk.cyan('\n💡 Press Enter to open the report in your browser...'));
+    
+    rl.on('line', () => {
+      rl.close();
+      openInBrowser(absolutePath);
+      resolve();
+    });
+
+    // Also handle Ctrl+C gracefully
+    rl.on('SIGINT', () => {
+      rl.close();
+      console.log(chalk.gray('\n\nReport saved. You can open it manually later.'));
+      resolve();
+    });
+  });
+}
+
+/**
+ * Open a file in the default browser (cross-platform)
+ */
+function openInBrowser(filePath: string): void {
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  const fileUrl = `file://${normalizedPath}`;
+  let command: string;
+
+  switch (process.platform) {
+    case 'win32':
+      // Windows: use start command with file:// protocol
+      // Escape the path properly for Windows
+      const windowsPath = filePath.replace(/\\/g, '\\');
+      command = `start "" "${windowsPath}"`;
+      break;
+    case 'darwin':
+      // macOS: use open command
+      command = `open "${normalizedPath}"`;
+      break;
+    default:
+      // Linux and others: use xdg-open
+      command = `xdg-open "${fileUrl}"`;
+      break;
+  }
+
+  exec(command, (error) => {
+    if (error) {
+      console.log(chalk.yellow(`\n⚠️  Could not open browser automatically.`));
+      console.log(chalk.gray(`   Open manually: ${fileUrl}`));
+    } else {
+      console.log(chalk.green(`\n🌐 Opening report in your browser...`));
+    }
+  });
 }

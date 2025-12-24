@@ -224,9 +224,12 @@ packlyze analyze stats.json
   
   **How Packlyze detects entry points:**
   Packlyze scans your `src` folder for common entry files in this priority order:
-  - React: `App.tsx`, `App.jsx`, `index.tsx`, `index.jsx`
-  - Generic: `main.ts`, `main.js`, `main.tsx`, `main.jsx`, `index.ts`, `index.js`
-  - Vue/Angular: `app.ts`, `app.js`
+  1. **Main entry points** (highest priority): `main.tsx`, `main.ts`, `main.jsx`, `main.js`
+  2. **React App files**: `App.tsx`, `App.jsx`, `app.tsx`, `app.jsx`
+  3. **Index files**: `index.tsx`, `index.ts`, `index.jsx`, `index.js`
+  4. **Vue/Angular**: `app.ts`, `app.js`
+  
+  **Note:** `main.*` files are prioritized because they're typically the actual entry points, while `App.*` files are usually components imported by the entry point.
   
   **Example fixes:**
   ```javascript
@@ -243,6 +246,74 @@ packlyze analyze stats.json
   
   **Note for ES Module projects:**  
   If your `package.json` has `"type": "module"`, you need to use `webpack.config.cjs` instead of `webpack.config.js`. Packlyze will automatically detect this and suggest the correct filename.
+
+### **TypeScript/Webpack Compatibility Issues**
+
+**Important:** TypeScript and Webpack handle path resolution differently. Here are common issues:
+
+#### **1. Path Aliases Not Working in Webpack**
+**Problem:** Your code uses `@/hooks/useAuth` which works in TypeScript/your editor, but webpack can't resolve it.
+
+**Why:** TypeScript reads path aliases from `tsconfig.json`, but webpack doesn't. Webpack needs its own `resolve.alias` configuration.
+
+**Solution:** Packlyze automatically detects path aliases from `tsconfig.json` and adds them to your webpack config. However, make sure:
+
+1. ✅ Your `tsconfig.json` has `compilerOptions.paths` configured
+2. ✅ Use `moduleResolution: "node"` (not `"bundler"`) for webpack compatibility
+3. ✅ Path aliases are in the main `tsconfig.json` (not just in extended configs)
+
+**Example tsconfig.json:**
+```json
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "moduleResolution": "node",  // ✅ Use "node" for webpack
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  }
+}
+```
+
+#### **2. moduleResolution: "bundler" Issue**
+**Problem:** `moduleResolution: "bundler"` works with Vite/esbuild but not webpack.
+
+**Solution:** Change to `"node"` or `"node16"`:
+```json
+{
+  "compilerOptions": {
+    "moduleResolution": "node"  // ✅ Works with webpack
+  }
+}
+```
+
+Packlyze will warn you if it detects `moduleResolution: "bundler"` in your tsconfig.json.
+
+#### **3. ts-loader transpileOnly Mode**
+**Note:** Packlyze generates webpack configs with `transpileOnly: true` for faster builds. This means:
+- ✅ TypeScript is transpiled to JavaScript
+- ✅ Path aliases are resolved by webpack's `resolve.alias` (which packlyze adds automatically)
+- ⚠️ Type checking happens separately (run `tsc --noEmit` for type checking)
+
+#### **4. Alternative: tsconfig-paths-webpack-plugin**
+If you prefer automatic synchronization between `tsconfig.json` and webpack:
+
+```bash
+npm install --save-dev tsconfig-paths-webpack-plugin
+```
+
+Then in your webpack config:
+```javascript
+const TsconfigPathsPlugin = require('tsconfig-paths-webpack-plugin');
+
+module.exports = {
+  resolve: {
+    plugins: [new TsconfigPathsPlugin()]
+  }
+};
+```
+
+Packlyze uses `resolve.alias` by default, which is simpler and doesn't require additional dependencies.
 
 ---
 
