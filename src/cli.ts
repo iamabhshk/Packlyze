@@ -613,12 +613,13 @@ function openInBrowser(filePath: string): void {
   let command: string;
 
   switch (process.platform) {
-    case 'win32':
+    case 'win32': {
       // Windows: use start command with file:// protocol
       // Escape the path properly for Windows
       const windowsPath = filePath.replace(/\\/g, '\\');
       command = `start "" "${windowsPath}"`;
       break;
+    }
     case 'darwin':
       // macOS: use open command
       command = `open "${normalizedPath}"`;
