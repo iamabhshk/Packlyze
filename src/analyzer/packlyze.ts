@@ -32,9 +32,11 @@ export class Packlyze {
   } = {};
   private baseDir: string;
   private verboseLog?: (message: string) => void;
+  private statsPath: string;
 
   constructor(statsPath: string, verboseLog?: (message: string) => void) {
     this.verboseLog = verboseLog;
+    this.statsPath = statsPath;
     if (!fs.existsSync(statsPath)) {
       throw new Error(`Stats file not found: ${statsPath}`);
     }
@@ -1539,9 +1541,101 @@ module.exports = {
           }
         } else if (detectedEntry) {
           // Config exists and extension is correct, but entry point is wrong
-          suggestion = `\n\n🔍 Auto-detected entry point: ${detectedEntry}\n` +
-            `   Update your ${path.basename(configCheck.path || 'webpack.config.js')}:\n` +
-            `   entry: '${detectedEntry}',\n`;
+          // Automatically update the config file
+          try {
+            const configPath = configCheck.path!;
+            let configContent = fs.readFileSync(configPath, 'utf-8');
+            
+            // Try to find and replace the entry point
+            // Match patterns like: entry: './src', entry: "./src", entry: './src',
+            const entryPatterns = [
+              /entry:\s*['"]\.\/src['"]/g,
+              /entry:\s*['"]\.\/src\/['"]/g,
+              /entry:\s*['"]\.\/src\s*['"]/g,
+            ];
+            
+            let updated = false;
+            for (const pattern of entryPatterns) {
+              if (pattern.test(configContent)) {
+                // Replace the entry point
+                configContent = configContent.replace(
+                  /entry:\s*['"]\.\/src['"]?/g,
+                  `entry: '${detectedEntry}'`
+                );
+                fs.writeFileSync(configPath, configContent, 'utf-8');
+                updated = true;
+                this.log(`✅ Automatically updated entry point in ${path.basename(configPath)} to: ${detectedEntry}`);
+                break;
+              }
+            }
+            
+            // If pattern matching didn't work, try a more general approach
+            if (!updated) {
+              // Look for entry: anywhere in the config
+              const entryMatch = configContent.match(/entry:\s*['"]([^'"]+)['"]/);
+              if (entryMatch && (entryMatch[1] === './src' || entryMatch[1] === './src/')) {
+                configContent = configContent.replace(
+                  entryMatch[0],
+                  `entry: '${detectedEntry}'`
+                );
+                fs.writeFileSync(configPath, configContent, 'utf-8');
+                updated = true;
+                this.log(`✅ Automatically updated entry point in ${path.basename(configPath)} to: ${detectedEntry}`);
+              }
+            }
+            
+            if (updated) {
+              suggestion = `\n\n✅ Automatically fixed entry point in ${path.basename(configPath)}!\n` +
+                `   Updated: entry: '${detectedEntry}'\n\n` +
+                `💡 Regenerating stats.json automatically...\n`;
+              
+              // Automatically regenerate stats.json
+              try {
+                const statsFileName = path.basename(this.statsPath);
+                const webpackCommand = `npx webpack --profile --json ${statsFileName}`;
+                const projectRoot = this.baseDir;
+                
+                this.log(`Regenerating stats.json after fixing entry point...`);
+                execSync(webpackCommand, {
+                  cwd: projectRoot,
+                  stdio: 'pipe',
+                  encoding: 'utf-8'
+                });
+                
+                // Reload stats after regeneration
+                this.loadStats(this.statsPath);
+                this.log(`✅ Stats.json regenerated successfully!`);
+                
+                // Clear the suggestion since we've fixed it automatically
+                suggestion = `\n\n✅ Automatically fixed entry point and regenerated stats.json!\n` +
+                  `   Updated: entry: '${detectedEntry}'\n` +
+                  `   Stats file regenerated successfully.\n\n` +
+                  `💡 Re-running analysis...\n`;
+                
+                // Return early - stats are now valid
+                return;
+              } catch (regenerateError: unknown) {
+                const regenErrorMsg = regenerateError instanceof Error ? regenerateError.message : String(regenerateError);
+                this.log(`Could not auto-regenerate stats: ${regenErrorMsg}`);
+                suggestion = `\n\n✅ Automatically fixed entry point in ${path.basename(configPath)}!\n` +
+                  `   Updated: entry: '${detectedEntry}'\n\n` +
+                  `💡 Next steps:\n` +
+                  `   1. Regenerate stats.json: npx webpack --profile --json stats.json\n` +
+                  `   2. Run packlyze analyze stats.json again\n`;
+              }
+            } else {
+              // Couldn't auto-update, provide manual instructions
+              suggestion = `\n\n🔍 Auto-detected entry point: ${detectedEntry}\n` +
+                `   Update your ${path.basename(configCheck.path || 'webpack.config.js')}:\n` +
+                `   entry: '${detectedEntry}',\n`;
+            }
+          } catch (updateError) {
+            // If update fails, provide manual instructions
+            this.log(`Could not auto-update config: ${updateError}`);
+            suggestion = `\n\n🔍 Auto-detected entry point: ${detectedEntry}\n` +
+              `   Update your ${path.basename(configCheck.path || 'webpack.config.js')}:\n` +
+              `   entry: '${detectedEntry}',\n`;
+          }
         } else {
           suggestion = `\n\n💡 Tip: Your entry point should be a FILE, not a directory.\n` +
             `   Common entry points: ./src/App.tsx, ./src/index.jsx, ./src/main.js\n` +
